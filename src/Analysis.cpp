@@ -142,9 +142,7 @@ BufferHandle LoadVideoToBuffer(BufferHandle buffer, VideoInfo info, int frame_co
 	Mat frame;
 	for (int i = 0; i < frame_count; i++) {
 		// Load next frame of capture into Mat object
-		INFO("Started to read frame")
 		cap >> frame;
-		INFO("Read frame")
 
 		if (frame.empty()) {
 			std::cout << "Attempted to read empty frame." << std::endl;
@@ -194,14 +192,11 @@ bool ABS_MAG_ACCUM(float * out, float * in, int frame_size) {
 
 // Working //
 QMaskStruct GenRadiusMasks(int q_count, int width, int height) {
-
 	std::cout << "[INFO]	Mask Generation Started." << std::endl;
+
 	int frame_size = width * height;
-	float *test = new float[1000];
-	INFO("allocated test")
     std::cout << frame_size << " " << q_count << std::endl;
     float *masks = new float[frame_size * q_count];
-    std::cout << "[INFO]	Allocated space for masks." << std::endl;
 
     float *q_vector = new float[q_count];
     float *q_sq_vector = new float[q_count];
@@ -240,8 +235,8 @@ QMaskStruct GenRadiusMasks(int q_count, int width, int height) {
         }
 
         // Print masks - for debug
-        std::cout << "q: " << q_idx << std::endl;
-        PrintFrame(width, height, masks+q_idx*frame_size);
+        //std::cout << "q: " << q_idx << std::endl;
+        //PrintFrame(width, height, masks+q_idx*frame_size);
     }
 
     QMaskStruct mask_out;
@@ -301,7 +296,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap) {
     // Buffer information
 	int buffer_frame_count = 100;
-    int chunk_frame_count = 40;
+    int chunk_frame_count = 20;
     int video_length = info.frame_count;
     int frame_size = info.w * info.h;
 
@@ -331,7 +326,6 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
     // Analysis
     float norm_factor = 1.0 / (float) chunks_analysed;
     QMaskStruct mask = GenRadiusMasks(5, info.w, info.h);
-    std::cout << "[INFO]	Generated masks." << std::endl;
 
     float * iq_tau = new float[tau_array.size * mask.q_count]();
     float * tau_frame;
@@ -344,7 +338,7 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
             if (mask.px_count[q_idx] == 0) {
                 iq_tau[q_idx * tau_array.size + tau_idx] = 1;
             } else {
-                std::cout << "q: " << q_idx << "\t t: " << tau_idx << std::endl;
+                //std::cout << "q: " << q_idx << "\t t: " << tau_idx << std::endl;
                 //PrintFrame(info.w, info.h, mask.mask_fft+q_idx*frame_size);
 
                 for (int i = 0; i < frame_size; i++) {
@@ -361,8 +355,8 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
 
 
 int main(int argc, char **argv) {
-    VideoInfo info = {16, 16, 50};
-	VideoCapture cap(0);
+    VideoInfo info = {64, 64, 20};
+	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.2um_vid.mp4");
 
     int tau_vec [10] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
     IntArray tau_arr = {&tau_vec[0], 10};
