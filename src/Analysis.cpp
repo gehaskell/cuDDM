@@ -273,8 +273,8 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 	    std::cout << "Analysing tau " << tau << std::endl;
 
         // get pointers to frames corresponding to tau
-        local_abs_diff = abs_diff + (tau * frame_size);
-        local_fft_diff = fft_diff + (tau * frame_size);
+        local_abs_diff = abs_diff + (tau_idx * frame_size);
+        local_fft_diff = fft_diff + (tau_idx * frame_size);
 
         idx1 = frame_size * (rand() % (chunk_frame_count - tau)) + buffer.data;
         idx2 = idx1 + tau;
@@ -284,7 +284,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
         // FFT(A,B,n,m,error) -- FFT from A to B where A and B are matrices (2D arrays) with n rows and m columns
         simple_fft::FFT(local_abs_diff, local_fft_diff, info.w, info.h, FFT_ERROR);
 
-        ABS_MAG_ACCUM(fft_abs_out.data + (tau * frame_size), local_fft_diff, frame_size);
+        ABS_MAG_ACCUM(fft_abs_out.data + (tau_idx * frame_size), local_fft_diff, frame_size);
         //INFO("Finished loop.")
     }
     if (buffer.data + chunk_frame_count * frame_size  > buffer.end) {
@@ -300,7 +300,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 
 FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap) {
     // Buffer information
-	int buffer_frame_count = 1000;
+	int buffer_frame_count = 100;
     int chunk_frame_count = 40;
     int video_length = info.frame_count;
     int frame_size = info.w * info.h;
@@ -326,7 +326,7 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
     }
     std::cout << "[INFO]	Main Loop ended." << std::endl;
 
-    delete []buffer_start;
+    //delete []buffer_start;
 
     // Analysis
     float norm_factor = 1.0 / (float) chunks_analysed;
