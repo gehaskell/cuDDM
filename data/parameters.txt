@@ -1,0 +1,12 @@
+Majority will be close to these parameters, using 100x objective.
+
+kB = 1.38e-23; %J/K
+T = 300; %K
+mu = 1e-3; %Pa.s
+a = 0.2e-6; %m
+
+D_theory = kB*T / (3*pi*mu*a) * 1e12 %D in um^2/s
+
+FrameRate =30; %fps
+px2mum = 0.0969; %um/px ratio
+D_experiment = fit_out_brownian.Dm * px2mum *px2mum * FrameRate
