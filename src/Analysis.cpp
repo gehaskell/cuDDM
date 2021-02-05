@@ -5,6 +5,7 @@
 #include <simple_fft/fft_settings.h>
 #include <simple_fft/fft.h>
 #include <opencv2/opencv.hpp>
+#include <math.h>
 
 using namespace cv;
 
@@ -157,7 +158,7 @@ BufferHandle LoadVideoToBuffer(BufferHandle buffer, VideoInfo info, int frame_co
 			for (int row = 0; row < info.h; row++) {
 				for (int col = 0; col < info.w; col++) {
 					// (mat.step)/mat.elemSize1() is the actual row length in (double) elements
-					buffer.load[i*frame_size + row * info.w + col] = (float)frame_array[((frame.step)/frame.elemSize1())* col + frame.channels() * row] / 256;
+					buffer.load[i*frame_size + row * info.w + col] = (float)frame_array[((frame.step)/frame.elemSize1())* col + frame.channels() * row];
 				}
 			}
 			//PrintFrame(info.w, info.h, &buffer.load[i*frame_size]);
@@ -190,8 +191,12 @@ bool ABS_MAG_ACCUM(float * out, float * in, int frame_size) {
     return true;
 }
 
-// Working //
-QMaskStruct GenRadiusMasks(int q_count, int width, int height) {
+QMaskStruct GenLinearRadiusMasks(int q_count, int width, int height) {
+	// Generates width * height matrices to mask various q lengths
+	// Returns a QMaskStruct with a pointer to a width * height * q_count float array
+	// Each frame is FFT shifted manually so is compatible with the result from the result  given by the FFT later on
+	// FFT gives the FT but is FFT shifted
+
 	std::cout << "[INFO]	Mask Generation Started." << std::endl;
 
 	int frame_size = width * height;
@@ -205,6 +210,77 @@ QMaskStruct GenRadiusMasks(int q_count, int width, int height) {
     for (int i=0; i < q_count; i++) {
         q_vector[i] =  1.0 + ((float)width / 1.5 - 1.0) * ((float)i / (float)(q_count - 1));
         q_sq_vector[i] = q_vector[i] * q_vector[i];
+    }
+
+    float half_w, half_h;
+    half_h = height / 2.0;
+    half_w = width / 2.0;
+    float r_sqr, ratio;
+
+    // First Generate the radius masks
+    int shift_x, shift_y;
+    for (int q_idx = 0; q_idx < q_count; q_idx++) {
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                // We want the x and y values to be FFT shifted, we can perform this manually
+                shift_x = (x + (int)half_w) % width;
+                shift_y = (y + (int)half_h) % height;
+
+                r_sqr = (shift_x - half_w) * (shift_x - half_w) + (shift_y - half_h) * (shift_y - half_h);
+                ratio = r_sqr / q_sq_vector[q_idx];
+                if (1 <= ratio && ratio <= 1.44) {
+                    masks[q_idx*frame_size + y*width + x] = 1.0;
+                    px_count[q_idx] += 1;
+                } else {
+                    masks[q_idx*frame_size + y*width + x] = 0.0;
+                }
+            }
+        }
+
+        // Print masks - for debug
+        //std::cout << "q: " << q_idx << std::endl;
+        //PrintFrame(width, height, masks+q_idx*frame_size);
+    }
+
+    QMaskStruct mask_out;
+    mask_out.mask_fft = masks;
+    mask_out.px_count = px_count;
+    mask_out.q_vector = q_vector;
+    mask_out.q_count = q_count;
+    return mask_out;
+}
+
+QMaskStruct GenRadiusMasks(int NOTHING, int width, int height) {
+	// Generates width * height matrices to mask various q lengths
+	// Returns a QMaskStruct with a pointer to a width * height * q_count float array
+	// Each frame is FFT shifted manually so is compatible with the result from the result  given by the FFT later on
+	// FFT gives the FT but is FFT shifted
+
+	// Want the q radius to be spaced as:
+	// 3, 6, 12, 24, 48, ..
+	// We must have log2(n) + log(2/3)
+	// We don't really care about edge cases as the image size should be a power of 2 anyway - this could pose issue later!
+
+	INFO("Mask generation started");
+
+	int smallest_size = (width < height) ? width : height;
+	int q_count = (int)(log2(smallest_size) + log2(2.0/3.0) - 1);
+
+	int frame_size = width * height;
+    float *masks = new float[frame_size * q_count];
+
+    float *q_vector = new float[q_count];
+    float *q_sq_vector = new float[q_count];
+    int * px_count = new int[q_count]();
+
+    int current_q = 3;
+    for (int i=0; i < q_count; i++) {
+        q_vector[i] =  current_q;
+        q_sq_vector[i] = q_vector[i] * q_vector[i];
+        current_q *= 2;
+        std::cout << current_q << std::endl;
     }
 
     float half_w, half_h;
@@ -296,7 +372,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap) {
     // Buffer information
 	int buffer_frame_count = 200;
-    int chunk_frame_count = 50;
+    int chunk_frame_count = 20;
     int video_length = info.frame_count;
     int frame_size = info.w * info.h;
 
@@ -352,6 +428,7 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
             }
         }
     }
+
     //delete []buffer_start;
     //delete []fft_data;
     FloatArray iq_tau_arr = {iq_tau, tau_array.size * mask.q_count};
@@ -360,18 +437,19 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
 
 
 int main(int argc, char **argv) {
-    VideoInfo info = {512, 512, 360};
+    VideoInfo info = {128, 128, 200};
 	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.2um_vid.mp4");
 
-    int tau_vec [15] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    IntArray tau_arr = {&tau_vec[0], 13};
+    int tau_vec [14] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    IntArray tau_arr = {&tau_vec[0], 14};
 
     FloatArray out = RunCircVideoDDM(info, tau_arr, cap);
 
     for (int i = 0; i < out.size; i++)
     {
-       std::cout << out.data[i] << std::endl;
+       std::cout << out.data[i] << ", ";
     }
+    std::cout << std::endl;
 
 
 }
