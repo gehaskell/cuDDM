@@ -66,7 +66,7 @@ FloatArray GenRandomData(VideoInfo info, int particle_count, int walk_size) {
     float * out = new float[w * h * info.frame_count]();
     int * particles = new int[particle_count * 2]();
 
-    // assing random starting postion for particles - dont care about overlap
+    // assing random starting postion for particles - don't care about overlap
     // particle will be 2 x 2 pixels hence stopping 1 before the edge of grid
     for (int i = 0; i < particle_count; i++) {
         particles[2 * i] = rand() % (w - 1);
@@ -280,7 +280,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
         simple_fft::FFT(local_abs_diff, local_fft_diff, info.w, info.h, FFT_ERROR);
 
         ABS_MAG_ACCUM(fft_abs_out.data + (tau_idx * frame_size), local_fft_diff, frame_size);
-        //INFO("Finished loop.")
+	    std::cout << "Finished analysis tau " << tau << std::endl;
     }
     if (buffer.data + chunk_frame_count * frame_size  > buffer.end) {
     	buffer.data = buffer.start;
@@ -295,10 +295,15 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 
 FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap) {
     // Buffer information
-	int buffer_frame_count = 100;
-    int chunk_frame_count = 20;
+	int buffer_frame_count = 200;
+    int chunk_frame_count = 50;
     int video_length = info.frame_count;
     int frame_size = info.w * info.h;
+
+
+    if (chunk_frame_count <= tau_array.size) {
+    	std::cout << "tau array larger than chunk size" << std::endl;
+    }
 
     // Initialise Buffer
     float * buffer_start = new float [info.w * info.h * buffer_frame_count]();
@@ -355,11 +360,11 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
 
 
 int main(int argc, char **argv) {
-    VideoInfo info = {64, 64, 20};
+    VideoInfo info = {512, 512, 360};
 	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.2um_vid.mp4");
 
-    int tau_vec [10] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-    IntArray tau_arr = {&tau_vec[0], 10};
+    int tau_vec [15] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    IntArray tau_arr = {&tau_vec[0], 13};
 
     FloatArray out = RunCircVideoDDM(info, tau_arr, cap);
 
