@@ -6,6 +6,7 @@
 #include <simple_fft/fft.h>
 #include <opencv2/opencv.hpp>
 #include <math.h>
+#include <fstream>
 
 using namespace cv;
 
@@ -172,25 +173,6 @@ BufferHandle LoadVideoToBuffer(BufferHandle buffer, VideoInfo info, int frame_co
 }
 
 
-bool ABS_DIFF(float * out, float * A, float * B, int frame_size) {
-    for (int i = 0; i < frame_size; i++) {
-        out[i] += abs(A[i] - B[i]);
-    }
-    return true;
-}
-
-
-bool ABS_MAG_ACCUM(float * out, float * in, int frame_size) {
-    // divide norm factor, abs, and square
-    float norm_factor = 1 / (float)(frame_size * frame_size);
-
-    for (int i = 0; i < frame_size; i++) {
-        out[i] += (in[i] * in[i]) * norm_factor;
-    }
-
-    return true;
-}
-
 QMaskStruct GenLinearRadiusMasks(int q_count, int width, int height) {
 	// Generates width * height matrices to mask various q lengths
 	// Returns a QMaskStruct with a pointer to a width * height * q_count float array
@@ -324,18 +306,15 @@ QMaskStruct GenRadiusMasks(int NOTHING, int width, int height) {
 }
 
 
-BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft_abs_out, IntArray tau_array, int chunk_frame_count) {
+BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft_abs_out, IntArray tau_array, int chunk_frame_count, float * abs_diff, float*fft_diff) {
     INFO("Entered chunk analysis.")
     int frame_size = info.w * info.h;  // number of elements per frame
+    float norm_factor_sqr = 1.0 / ((float)(frame_size) * (float)(frame_size));
 
     int *tau_vector = tau_array.data;
 
-    float *abs_diff = new float[tau_array.size * frame_size]();
-    float *fft_diff = new float[tau_array.size * frame_size]();
-
     int tau;
     float  *idx1, *idx2;
-    float *local_abs_diff, *local_fft_diff;
 
     for (int tau_idx = 0; tau_idx < tau_array.size; tau_idx++)
     {
@@ -344,19 +323,27 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 	    std::cout << "Analysing tau " << tau << std::endl;
 
         // get pointers to frames corresponding to tau
-        local_abs_diff = abs_diff + (tau_idx * frame_size);
-        local_fft_diff = fft_diff + (tau_idx * frame_size);
+        idx1 = buffer.data;
+        idx1 += frame_size * (rand() % (chunk_frame_count - tau - 1));
+        idx2 = idx1 + tau * frame_size;
 
-        idx1 = frame_size * (rand() % (chunk_frame_count - tau)) + buffer.data;
-        idx2 = idx1 + tau;
+        // Find the difference between the two frames
 
-        ABS_DIFF(local_abs_diff, idx1, idx2, frame_size);
+        for (int i=0; i < frame_size; i++) {
+        	abs_diff[i] = idx1[i] - idx2[i];
+        	fft_diff[i] = 0;
+        }
 
+        // FFT the difference
         // FFT(A,B,n,m,error) -- FFT from A to B where A and B are matrices (2D arrays) with n rows and m columns
-        simple_fft::FFT(local_abs_diff, local_fft_diff, info.w, info.h, FFT_ERROR);
+        simple_fft::FFT(abs_diff, fft_diff, info.w, info.h, FFT_ERROR);
 
-        ABS_MAG_ACCUM(fft_abs_out.data + (tau_idx * frame_size), local_fft_diff, frame_size);
-	    std::cout << "Finished analysis tau " << tau << std::endl;
+        // add the normalised value to fft_abs_out
+        for (int i=0; i < frame_size; i++) {
+        	fft_abs_out.data[i + frame_size*tau_idx] += fft_diff[i] * fft_diff[i] * norm_factor_sqr;
+        }
+
+	    //std::cout << idx1[0] << " " << idx2[0] << " " << local_abs_diff[0] << " "  << local_fft_diff[0] << std::endl;
     }
     if (buffer.data + chunk_frame_count * frame_size  > buffer.end) {
     	buffer.data = buffer.start;
@@ -369,10 +356,10 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 }
 
 
-FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap) {
+FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap, QMaskStruct mask) {
     // Buffer information
 	int buffer_frame_count = 200;
-    int chunk_frame_count = 20;
+    int chunk_frame_count = 40;
     int video_length = info.frame_count;
     int frame_size = info.w * info.h;
 
@@ -391,13 +378,19 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
     float * fft_output_data = new float[fft_output_size]();
     FloatArray fft_output = {fft_output_data, fft_output_size};
 
+    // For working out we require two arrays - really only need to be frame_size but for ease of
+    // porting to full cuda tau_array * frame_size
+    float *abs_diff = new float[frame_size]();
+    float *fft_diff = new float[frame_size]();
+
     // Main Loop
     Mat frame;
     int chunks_analysed = 0;
     while (info.frame_count >= chunk_frame_count) {
+        std::cout << info.frame_count << std::endl;
         chunks_analysed++;
         buffer = LoadVideoToBuffer(buffer, info, chunk_frame_count, cap);
-        buffer = DoChunkAnalysis(buffer, info, fft_output, tau_array, chunk_frame_count);
+        buffer = DoChunkAnalysis(buffer, info, fft_output, tau_array, chunk_frame_count, abs_diff, fft_diff);
         info.frame_count -= chunk_frame_count;
     }
     std::cout << "[INFO]	Main Loop ended." << std::endl;
@@ -406,10 +399,10 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
 
     // Analysis
     float norm_factor = 1.0 / (float) chunks_analysed;
-    QMaskStruct mask = GenRadiusMasks(5, info.w, info.h);
 
     float * iq_tau = new float[tau_array.size * mask.q_count]();
     float * tau_frame;
+    float val;
 
     for (int tau_idx = 0; tau_idx < tau_array.size; tau_idx++) {
         tau_frame = fft_output_data + (frame_size * tau_idx);
@@ -423,7 +416,9 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
                 //PrintFrame(info.w, info.h, mask.mask_fft+q_idx*frame_size);
 
                 for (int i = 0; i < frame_size; i++) {
-                	iq_tau[q_idx * tau_array.size + tau_idx] += (float)mask.mask_fft[q_idx*frame_size + i] * tau_frame[i] * norm_factor;
+                	val = tau_frame[i] * mask.mask_fft[q_idx * frame_size + i] * norm_factor / (float)mask.px_count[q_idx];
+
+                	iq_tau[q_idx * tau_array.size + tau_idx] += val;
                 }
             }
         }
@@ -437,19 +432,45 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap)
 
 
 int main(int argc, char **argv) {
-    VideoInfo info = {128, 128, 200};
+    VideoInfo info = {1024, 1024, 600};
+
 	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.2um_vid.mp4");
 
-    int tau_vec [14] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-    IntArray tau_arr = {&tau_vec[0], 14};
+	int t_vector [14] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    IntArray tau_arr = {&t_vector[0], 14};
 
-    FloatArray out = RunCircVideoDDM(info, tau_arr, cap);
+	QMaskStruct mask = GenRadiusMasks(10, info.w, info.h);
+	float *q_vector = mask.q_vector;
 
-    for (int i = 0; i < out.size; i++)
-    {
-       std::cout << out.data[i] << ", ";
+	FloatArray out = RunCircVideoDDM(info, tau_arr, cap, mask);
+
+    int frame_size = info.w * info.h;
+
+    std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/data.test");
+
+    if (myfile.is_open()) {
+    	for (int i = 0; i < mask.q_count; i++) {
+    		myfile << q_vector[i] << " ";
+    	}
+		myfile << "\n";
+    	for (int i = 0; i < tau_arr.size; i++) {
+    		myfile << t_vector[i] << " ";
+    	}
+		myfile << "\n";
+
+		for (int q_idx = 0; q_idx < mask.q_count; q_idx++) {
+	    	for (int t_idx = 0; t_idx < tau_arr.size; t_idx++) {
+	    		myfile << out.data[q_idx * tau_arr.size + t_idx] << " ";
+	    	}
+			myfile << "\n";
+		}
+
+		myfile.close();
+    } else {
+    	std::cout << "Unable to open file";
+    	return 0;
     }
-    std::cout << std::endl;
 
+    std::cout << "END" << std::endl;
 
 }
