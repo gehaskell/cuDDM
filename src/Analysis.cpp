@@ -431,7 +431,7 @@ FloatArray RunCircVideoDDM(VideoInfo info, IntArray tau_array, VideoCapture cap,
 }
 
 
-int main(int argc, char **argv) {
+int old_main(int argc, char **argv) {
     VideoInfo info = {1024, 1024, 600};
 
 	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.2um_vid.mp4");
@@ -472,5 +472,6 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "END" << std::endl;
+    return 0;
 
 }

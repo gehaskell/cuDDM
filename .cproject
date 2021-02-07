@@ -24,9 +24,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="nvcc.linker.libs.425260397" name="Libraries (-l)" superClass="nvcc.linker.libs" useByScannerDiscovery="false" valueType="libs">
 									<listOptionValue builtIn="false" value="opencv_cudev"/>
-									<listOptionValue builtIn="false" value=" opencv_phase_unwrapping"/>
+									<listOptionValue builtIn="false" value="opencv_phase_unwrapping"/>
 									<listOptionValue builtIn="false" value="opencv_superres"/>
-									<listOptionValue builtIn="false" value=" opencv_surface_matching"/>
+									<listOptionValue builtIn="false" value="opencv_surface_matching"/>
+									<listOptionValue builtIn="false" value="cufft"/>
 									<listOptionValue builtIn="false" value=" opencv_tracking "/>
 									<listOptionValue builtIn="false" value="opencv_datasets"/>
 									<listOptionValue builtIn="false" value=" opencv_text"/>
