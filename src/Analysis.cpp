@@ -1,3 +1,4 @@
+/*
 #define INFO(x) std::cout << "[INFO] " << x << std::endl;
 
 #include <iostream>
@@ -324,7 +325,7 @@ BufferHandle DoChunkAnalysis(BufferHandle buffer, VideoInfo info, FloatArray fft
 
         // get pointers to frames corresponding to tau
         idx1 = buffer.data;
-        idx1 += frame_size * (rand() % (chunk_frame_count - tau - 1));
+        idx1 += frame_size * (rand() % (chunk_frame_count - tau));
         idx2 = idx1 + tau * frame_size;
 
         // Find the difference between the two frames
@@ -475,3 +476,4 @@ int old_main(int argc, char **argv) {
     return 0;
 
 }
+*/
