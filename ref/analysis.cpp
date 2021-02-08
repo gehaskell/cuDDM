@@ -1,4 +1,3 @@
-/*
 #define INFO(x) std::cout << "[INFO] " << x << std::endl;
 
 #include <iostream>
@@ -476,4 +475,4 @@ int old_main(int argc, char **argv) {
     return 0;
 
 }
-*/
+
