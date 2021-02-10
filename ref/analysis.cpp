@@ -174,6 +174,8 @@ BufferHandle LoadVideoToBuffer(BufferHandle buffer, VideoInfo info, int frame_co
 
 
 QMaskStruct GenLinearRadiusMasks(int q_count, int width, int height) {
+	// THIS IS PROBABLY BROKEN - THE MASK GOES OUT OF SCOPE - MAY BE DELETED!
+
 	// Generates width * height matrices to mask various q lengths
 	// Returns a QMaskStruct with a pointer to a width * height * q_count float array
 	// Each frame is FFT shifted manually so is compatible with the result from the result  given by the FFT later on
