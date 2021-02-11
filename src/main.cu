@@ -4,6 +4,7 @@
 #include <cufft.h>
 #include <opencv2/opencv.hpp>
 #include <fstream>
+#include <chrono>
 
 using namespace cv;
 
@@ -83,19 +84,6 @@ void LoadVideoToBuffer(float *d_ptr, int frame_count, VideoCapture cap, int w, i
 	cudaMemcpy(d_ptr, h_ptr, num_elements * frame_count * sizeof(float), cudaMemcpyHostToDevice);
 }
 
-//__global__ void AbsDifference(float *d_buffer, cufftReal *d_diff, int frame1, int frame2, int width, int height) {
-//	int size = width * height;
-//
-//	int x = threadIdx.x + blockIdx.x * 32;
-//	int y = threadIdx.y + blockIdx.y * 32;
-//
-//	if (x <= width-1 && y <= height-1) {
-//		int pos_offset = y * width + x;
-//		d_diff[pos_offset] = abs(d_buffer[frame1 * size + pos_offset] - d_buffer[frame2 * size + pos_offset]);
-//	}
-//
-//	return;
-//}
 
 __global__ void AbsDifference(cufftReal *d_diff, float *d_frame1, float *d_frame2, int width, int height) {
 	int x = threadIdx.x + blockIdx.x * 32;
@@ -171,17 +159,16 @@ void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_ve
 	}
 
 	// Main loop
-
 	int tau, idx1, idx2;
 	float *d_frame1, *d_frame2;
 
-	for (int repeats = 0; repeats < 10; repeats++) {
+	for (int repeats = 0; repeats < 20; repeats++) {
 		for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
 			tau = tau_vector[tau_idx];
 
 			idx1 = rand() % (frame_count - tau);
 			idx2 = idx1 + tau;
-			std::cout << "tau: " << tau << " idxs: " << idx1 << ", " << idx2 << std::endl;
+			// std::cout << "tau: " << tau << " idxs: " << idx1 << ", " << idx2 << std::endl;
 
 			d_frame1 = d_chunk_ptr + (idx1 * w * h);	// float pointer to frame 1
 			d_frame2 = d_chunk_ptr + (idx2 * w * h);
@@ -196,38 +183,6 @@ void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_ve
 			processFFT<<<gridDim, blockDim>>>(d_fft_local, d_out, tau_idx, w, h); // process FFT (i.e. normalise and add to accumulator)
 		}
 	}
-
-//	int tau, frame1, frame2;
-//
-//	for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
-//		for (int repeats = 0; repeats < 40; repeats++) {
-//			tau = tau_vector[tau_idx];
-//
-//			frame1 = rand() % (chunk_frame_count - tau);
-//			frame2 = frame1 + tau;
-//
-//
-//
-//			std::cout << " Abs Diff" << std::endl;
-//			AbsDifference<<<gridDim, blockDim>>>(d_buffer, d_diff_local, frame1, frame2, width, height);
-//
-//			// FFT
-//			std::cout << " FFt Diff" << std::endl;
-//			cufftHandle plan;
-//			if ((cufftPlan2d(&plan, height, width, CUFFT_R2C)) != CUFFT_SUCCESS) {
-//				std::cout << "cufft plan error" << std::endl;
-//			}
-//
-//			if ((cufftExecR2C(plan, (cufftReal*)d_diff_local, (cufftComplex*)d_fft_local)) != CUFFT_SUCCESS) {
-//				std::cout << "cufft exec error" << std::endl;
-//			}
-//
-//			std::cout << " Process FFt" << std::endl;
-//			processFFT<<<gridDim, blockDim>>>(d_fft_local, d_fft_accum, tau_idx, width, height);
-//			//cudaMemcpy(print_buffer, d_fft_accum, width*height*sizeof(float), cudaMemcpyDeviceToHost);
-//		}
-//	}
-
 }
 
 void RunDDM(float *out, VideoCapture cap, int width, int height, int frame_count, int tau_count, int* tau_vector, float * print_buffer) {
@@ -261,7 +216,7 @@ void RunDDM(float *out, VideoCapture cap, int width, int height, int frame_count
 	std::cout<<"Done"<<std::endl;
 }
 
-void HARDCODEanalyseFFTHost(float *d_in, float *d_out, int *tau_vector, int tau_count, int width, int height, float *debug_buff=NULL) {
+void HARDCODEanalyseFFTHost(float *d_in, float *d_out, int norm_factor, int *tau_vector, int tau_count, int width, int height, float *debug_buff=NULL) {
     int w = width; int h = height;
 
 	// Generate q - vectors - Hard Coded
@@ -305,38 +260,38 @@ void HARDCODEanalyseFFTHost(float *d_in, float *d_out, int *tau_vector, int tau_
             }
         }
     }
-//    // Mask generation end
-//
-//    // Start analysis
-//    float *tau_frame;
-//    float val;
-//
-//    for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
-//        tau_frame = d_in + (w * h * tau_idx);
-//
-//        for (int q_idx = 0; q_idx < q_count; q_idx++) {
-//        	val = 0;
-//        	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
-//                for (int i = 0; i < w*h; i++) { 	// iterate through all pixels
-//                	val += d_in[w * h * tau_idx + i] * masks[w * h * tau_idx + i];
-//                }
-//                // Also should divide by chunk count
-//                val /= (float)px_count[q_idx]); // could be potential for overflow here
-//        	}
-//
-//        	iq_tau[q_idx * tau_count + tau_idx] = val;
-//        }
-//    }
-//
-//
 
+//	if (debug_buff != NULL) {
+//		memcpy(debug_buff, masks + w*h*4, width*height*sizeof(float));
+//		return;
+//	}
 
+    // Mask generation end
+
+    // Start analysis
+    float val;
+
+    for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
+
+        for (int q_idx = 0; q_idx < q_count; q_idx++) {
+        	val = 0;
+        	int px = 0;
+
+        	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
+
+        		for (int i = 0; i < w*h; i++) { 	// iterate through all pixels
+                	val += d_in[w * h * tau_idx + i] * masks[w * h * q_idx + i];
+                	if (masks[w * h * q_idx + i]) {px += 1;}
+                }
+                // Also should divide by chunk count
+                val /= (float)px_count[q_idx]; // could be potential for overflow here
+                val /= (float)norm_factor;
+        	}
+
+        	d_out[q_idx * tau_count + tau_idx] = val;
+        }
+    }
 }
-
-
-
-
-
 
 void analyseFFTHost(float *h_in, float *iq_tau, int number_chunks, int tau_count, int* tau_vector, int width, int height) {
 	// Handles generation of masks
@@ -426,17 +381,21 @@ int main(int argc, char **argv)
 {
 	VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.5um_vid.mp4");
 
-	int tau_count = 11;
-	int tau_vector [tau_count] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
-	int width = 512;
-	int height = 512;
-	int frame_count = 400;
+	int tau_count = 20;
+	int tau_vector [tau_count] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,15,16,17,18,19, 20, 21};
+	int width = 256;
+	int height = 256;
+	int frame_count = 100;
 
 
-	float * out = new float [width * height * tau_count];
+	float * data = new float [width * height * tau_count];
 	float * print_buffer = new float[width * height];
-	RunDDM(out, cap, width, height, frame_count, tau_count, &tau_vector[0], print_buffer);
-	write_to_file(out, width, height);
+
+	auto t1 = std::chrono::high_resolution_clock::now();
+	RunDDM(data, cap, width, height, frame_count, tau_count, &tau_vector[0], print_buffer);
+	auto t2 = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>( t2 - t1 ).count();
+    std::cout << duration << std::endl;
 
 
 	// HARD CODED - BAD - only works for 1024
@@ -448,52 +407,35 @@ int main(int argc, char **argv)
 
 	float * iq_tau = new float[tau_count * q_count]();
 
-	analyseFFTHost(out, iq_tau, 20, tau_count, tau_vector, width, height);
+	HARDCODEanalyseFFTHost(data, iq_tau, 20*30, tau_vector, tau_count, width, height, print_buffer);
 
-	for (int i = 0; i < tau_count * q_count; i++) {
-		std::cout << iq_tau[i] << std::endl;
-	}
-
-	// outputting iqtau
-    std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/iqt.txt");
-
-    if (myfile.is_open()) {
-    	for (int i = 0; i < q_count; i++) {
-    		myfile << q_vector[i] << " ";
-    	}
-		myfile << "\n";
-    	for (int i = 0; i < tau_count; i++) {
-    		myfile << tau_vector[i] << " ";
-    	}
-		myfile << "\n";
-
-		for (int q_idx = 0; q_idx < q_count; q_idx++) {
-	    	for (int t_idx = 0; t_idx < tau_count; t_idx++) {
-	    		myfile << out[q_idx * tau_count + t_idx] << " ";
-	    	}
-			myfile << "\n";
-		}
-
-		myfile.close();
-    } else {
-    	std::cout << "Unable to open file";
-    	return 0;
-    }
-
-
-//	std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/data2.txt");
-//	float * print_buff = new float[width * height];
-//	if (myfile.is_open()) {
-//		for (int t = 0; t < 1; tau_count++) {
-//			for (int x = 0; x < width*height; x++) {
-//				myfile << out[t*width*height+ x] <<" ";
-//			}
-//			myfile << std::endl;
+	//	write_to_file(print_buffer, width, height);
+//	// outputting iqtau
+//    std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/iqt.txt");
+//
+//    if (myfile.is_open()) {
+//    	for (int i = 0; i < q_count; i++) {
+//    		myfile << q_vector[i] << " ";
+//    	}
+//		myfile << "\n";
+//    	for (int i = 0; i < tau_count; i++) {
+//    		myfile << tau_vector[i] << " ";
+//    	}
+//		myfile << "\n";
+//
+//		for (int q_idx = 0; q_idx < q_count; q_idx++) {
+//	    	for (int t_idx = 0; t_idx < tau_count; t_idx++) {
+//	    		myfile << iq_tau[q_idx * tau_count + t_idx] << " ";
+//	    	}
+//			myfile << "\n";
 //		}
-//	}
-//	myfile.close();
+//
+//		myfile.close();
+//    } else {
+//    	std::cout << "Unable to open file";
+//    	return 0;
+//    }
 
-	std::cout << "DONE" << std::endl;
 
 }
 

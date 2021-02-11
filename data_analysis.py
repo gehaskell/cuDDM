@@ -37,25 +37,29 @@ def read_file(filename):
         print("Error reading file, check file exsists / formatting")
         q_vector, t_vector, iqt = [], [], [[]]
 
-    return q_vector, t_vector, iqt
+    return q_vector, t_vector, np.array(iqt)
 
 
 def i_vs_t(q_vector, tau_vec, iqt):
     fig, ax = plt.subplots()
     ax.set(xlabel=r"Lag time $\tau$", ylabel=r"I(q, $\tau$)")
 
-    count_to_plot = 100
     for idx, q in enumerate(q_vector):
-        if idx == 0:
-            continue
         ax.plot(tau_vec, iqt[idx], label=f"q = {q}")
-
-        count_to_plot -= 1
-        if not count_to_plot:
-            break 
         
     ax.legend(loc="upper left")
 
+    plt.show()
+
+def the_other_one(iqtau, q_vector):
+    fig, ax = plt.subplots()
+    ax.set(xlabel=r"q", ylabel=r"I(q, $\tau$)")
+
+    for tau in range(1, iqtau.shape[1]):
+        # plotting the points
+        ax.plot(q_vector, iqtau[:, tau], label=f"$\\tau$ = {tau}")
+
+    ax.legend(loc="upper left")
     plt.show()
 
 
@@ -63,3 +67,4 @@ def i_vs_t(q_vector, tau_vec, iqt):
 if __name__ == '__main__':
     q_vector, t_vector, iqt = read_file("./data/iqt.txt")
     i_vs_t(q_vector, t_vector, iqt)
+    the_other_one(iqt, q_vector)

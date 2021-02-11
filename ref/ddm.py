@@ -3,6 +3,7 @@ import logging
 import random
 import cv2
 import matplotlib.pyplot as plt
+import time 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 SINGLE = np.dtype("single")
@@ -127,12 +128,14 @@ def analyse_fft_mag_accum(fft_mag_accum, ccc_vector, radius_masks, q_vector, rad
 
 
 def ddm_circ(capture, video_width, video_height, tau_vector, frames):
-    buffer_size = 60
-    chunk_size = 20
+    buffer_size = 120
+    chunk_size = 30
 
     analysis_offset = 0
     load_in_offset = 0
     q_count = 20
+
+    t1 = time.time()
 
     buffer = np.zeros((buffer_size, video_width, video_height), SINGLE)
     fft_mag_accum = np.zeros((tau_vector.size, video_width, video_height), SINGLE)
@@ -153,6 +156,8 @@ def ddm_circ(capture, video_width, video_height, tau_vector, frames):
 
     chunk_analysis(buffer, analysis_offset, gen_chunk_size, fft_mag_accum, ccc_vector, tau_vector)
     logging.info("Initial analysis complete.")
+    t2 = time.time()
+    print(t2-t1)
 
     # Analyse
     radius_masks, q_vector, radius_mask_px_count = gen_radius_masks(q_count, video_width, video_height)
@@ -172,9 +177,9 @@ if __name__ == '__main__':
     frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # note this isn't actually super accurate
 
     #over write
-    width = 128
-    height = 128
-    frames = 100
+    width = 1024
+    height = 1024
+    frames = 90
 
 
     size = min(width, height) # divide 4 to reduce analysed area - remove for real implementation
@@ -188,11 +193,11 @@ if __name__ == '__main__':
     q_vector = q_vector[1:]
     iqtau = iqtau[1:,:]
 
-    for tau in range(1, iqtau.shape[1]):
-        # plotting the points
-        plt.plot(q_vector, iqtau[:, tau])
-        plt.xlabel("qs")
-    plt.show()
+    # for tau in range(1, iqtau.shape[1]):
+    #     # plotting the points
+    #     plt.plot(q_vector, iqtau[:, tau])
+    #     plt.xlabel("qs")
+    # plt.show()
 
     for qi in range(iqtau.shape[0]):
         # plotting the points
