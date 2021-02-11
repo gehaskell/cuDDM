@@ -1,6 +1,8 @@
 import numpy as np
 import logging
 import random
+import cv2
+import matplotlib.pyplot as plt
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 SINGLE = np.dtype("single")
@@ -162,8 +164,6 @@ def ddm_circ(capture, video_width, video_height, tau_vector, frames):
     return out
 
 if __name__ == '__main__':
-    import cv2
-    import matplotlib.pyplot as plt
     # Playing video from file:
     cap = cv2.VideoCapture("/home/ghaskell/projects_Git/cuDDM/data/colloid_0.5um_vid.mp4")
 

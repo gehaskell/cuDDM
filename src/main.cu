@@ -42,7 +42,7 @@ void LoadVideoToBuffer(float *d_ptr, int frame_count, VideoCapture cap, int w, i
 	int num_elements = w * h;
 
 	Mat input_img; //, grayscale_img;
-	float *h_ptr = new float[num_elements * frame_count];
+	float *h_ptr = new float[w * h * frame_count];
 
 	// There is some problems with the image type we are using - though some effort was put into switching to a
 	// more generic image format, more thought is required therefore switch to just dealing with 3 channel uchars
@@ -76,28 +76,40 @@ void LoadVideoToBuffer(float *d_ptr, int frame_count, VideoCapture cap, int w, i
 
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < w; x++) {
-				h_ptr[frame_idx * num_elements + y * w + x] = (float)input_img.at<uchar>(y,x);
+				h_ptr[frame_idx * num_elements + y * w + x] =  (float) input_img.data[((input_img.step)/input_img.elemSize1())* y + input_img.channels() * x];
 			}
 		}
 	}
 	cudaMemcpy(d_ptr, h_ptr, num_elements * frame_count * sizeof(float), cudaMemcpyHostToDevice);
 }
 
-__global__ void AbsDifference(float *d_buffer, cufftReal *d_diff, int frame1, int frame2, int width, int height) {
-	int size = width * height;
+//__global__ void AbsDifference(float *d_buffer, cufftReal *d_diff, int frame1, int frame2, int width, int height) {
+//	int size = width * height;
+//
+//	int x = threadIdx.x + blockIdx.x * 32;
+//	int y = threadIdx.y + blockIdx.y * 32;
+//
+//	if (x <= width-1 && y <= height-1) {
+//		int pos_offset = y * width + x;
+//		d_diff[pos_offset] = abs(d_buffer[frame1 * size + pos_offset] - d_buffer[frame2 * size + pos_offset]);
+//	}
+//
+//	return;
+//}
 
+__global__ void AbsDifference(cufftReal *d_diff, float *d_frame1, float *d_frame2, int width, int height) {
 	int x = threadIdx.x + blockIdx.x * 32;
 	int y = threadIdx.y + blockIdx.y * 32;
 
 	if (x <= width-1 && y <= height-1) {
 		int pos_offset = y * width + x;
-		d_diff[pos_offset] = abs(d_buffer[frame1 * size + pos_offset] - d_buffer[frame2 * size + pos_offset]);
+		d_diff[pos_offset] = abs(d_frame1[pos_offset] - d_frame2[pos_offset]);
 	}
-
 	return;
 }
 
-__global__ void processFFT(cufftComplex *d_data, float *d_fft_accum, int tau_idx, int width, int height) {
+
+__global__ void processFFT(cufftComplex *d_data, float *d_fft, int tau_idx, int width, int height) {
 	// Takes output of cuFFT R2C operation, normalises it (i.e. divides by px count), takes the magnitude and adds it to the accum_array
 
 	int size = width * height;
@@ -113,63 +125,108 @@ __global__ void processFFT(cufftComplex *d_data, float *d_fft_accum, int tau_idx
 		if (j >= sym_w) {
 			// real ->  d_data[i*sym_w+(width-j)].x
 			// img  -> -d_data[i*sym_w+(width-j)].y
-			mag = cuCabsf(d_data[i*sym_w+(width-j)]) / size;
+			mag = cuCabsf(d_data[i*sym_w+(width-j)]) / (float)size;
 
 		} else {
 			// real -> d_data[i*sym_w+j].x
 			// img  -> d_data[i*sym_w+j].y
-			mag = cuCabsf(d_data[i*sym_w+j]) / size;
+			mag = cuCabsf(d_data[i*sym_w+j]) / (float)size;
 		}
 
 		// add to fft_accum
-		d_fft_accum[tau_idx * size + pos_offset] += mag*mag;
+		d_fft[tau_idx * size + pos_offset] += mag*mag;
 	}
 }
 
-void analyseChunk(float* d_buffer, float *d_fft_accum, int tau_count, int chunk_frame_count, int *tau_vector, int width, int height, float* print_buffer) {
-	// print_buffer used for debug
-	// use cudaMemcpy(print_buffer, <frame pointer>, width*height*sizeof(float), cudaMemcpyDeviceToHost); etc to get ouput
+void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_vector, int tau_count, int width, int height, float *debug_buff=NULL) {
+	// debug_buffer is a width * height *sizeof(float) buffer which can be printed
+	//	if (debug_buff != NULL) {
+	//		cudaMemcpy(debug_buff, <device ptr>, width*height*sizeof(float), cudaMemcpyDeviceToHost);
+	//		return;
+	//	}
+	// d_out size: tau_count * width * height * sizeof(float)
 
-	std::cout << "Analyse Chunk" << std::endl;
-	cufftComplex *d_fft_local;
-	cudaMalloc((void **) &d_fft_local, width * (height/2 + 1) * sizeof(cufftComplex));
+	int w = width;
+	int h = height;
+
+	std::cout << "Chunk Analysis Start (" << frame_count << " frames)" <<  std::endl;
+
+	// Initialise workspace
+	// these buffers are fit for one frame, if we do all taus at once then should modify
 
 	cufftReal *d_diff_local;
-	cudaMalloc((void **) &d_diff_local, width * height * sizeof(cufftReal));
+	cudaMalloc((void **) &d_diff_local, w * h * sizeof(cufftReal));
 
+	cufftComplex *d_fft_local;
+	cudaMalloc((void **) &d_fft_local, w * (h / 2 + 1) * sizeof(cufftComplex));
+
+	// Max 1024 (32 x 32) threads per block hence multiple blocks to operate on a frame
 	dim3 blockDim(32, 32, 1);
 	dim3 gridDim((int)ceil(width/32.0), (int)ceil(height/32.0), 1);
 
-	int tau, frame1, frame2;
+	// cuFFT plan
+	cufftHandle plan;
+	if ((cufftPlan2d(&plan, w, h, CUFFT_R2C)) != CUFFT_SUCCESS) {
+		std::cout << "cuFFT Plan Error" << std::endl;
+	}
 
-	for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
-		for (int repeats = 0; repeats < 40; repeats++) {
+	// Main loop
+
+	int tau, idx1, idx2;
+	float *d_frame1, *d_frame2;
+
+	for (int repeats = 0; repeats < 10; repeats++) {
+		for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
 			tau = tau_vector[tau_idx];
 
-			frame1 = rand() % (chunk_frame_count - tau);
-			frame2 = frame1 + tau;
+			idx1 = rand() % (frame_count - tau);
+			idx2 = idx1 + tau;
+			std::cout << "tau: " << tau << " idxs: " << idx1 << ", " << idx2 << std::endl;
 
+			d_frame1 = d_chunk_ptr + (idx1 * w * h);	// float pointer to frame 1
+			d_frame2 = d_chunk_ptr + (idx2 * w * h);
 
+			AbsDifference<<<gridDim, blockDim>>>(d_diff_local, d_frame1, d_frame2, w, h); // find absolute difference
 
-			std::cout << " Abs Diff" << std::endl;
-			AbsDifference<<<gridDim, blockDim>>>(d_buffer, d_diff_local, frame1, frame2, width, height);
-
-			// FFT
-			std::cout << " FFt Diff" << std::endl;
-			cufftHandle plan;
-			if ((cufftPlan2d(&plan, height, width, CUFFT_R2C)) != CUFFT_SUCCESS) {
-				std::cout << "cufft plan error" << std::endl;
+			// FFT execute
+			if ((cufftExecR2C(plan, d_diff_local, d_fft_local)) != CUFFT_SUCCESS) {
+				std::cout << "cuFFT Exec Error" << std::endl;
 			}
 
-			if ((cufftExecR2C(plan, (cufftReal*)d_diff_local, (cufftComplex*)d_fft_local)) != CUFFT_SUCCESS) {
-				std::cout << "cufft exec error" << std::endl;
-			}
-
-			std::cout << " Process FFt" << std::endl;
-			processFFT<<<gridDim, blockDim>>>(d_fft_local, d_fft_accum, tau_idx, width, height);
-			//cudaMemcpy(print_buffer, d_fft_accum, width*height*sizeof(float), cudaMemcpyDeviceToHost);
+			processFFT<<<gridDim, blockDim>>>(d_fft_local, d_out, tau_idx, w, h); // process FFT (i.e. normalise and add to accumulator)
 		}
 	}
+
+//	int tau, frame1, frame2;
+//
+//	for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
+//		for (int repeats = 0; repeats < 40; repeats++) {
+//			tau = tau_vector[tau_idx];
+//
+//			frame1 = rand() % (chunk_frame_count - tau);
+//			frame2 = frame1 + tau;
+//
+//
+//
+//			std::cout << " Abs Diff" << std::endl;
+//			AbsDifference<<<gridDim, blockDim>>>(d_buffer, d_diff_local, frame1, frame2, width, height);
+//
+//			// FFT
+//			std::cout << " FFt Diff" << std::endl;
+//			cufftHandle plan;
+//			if ((cufftPlan2d(&plan, height, width, CUFFT_R2C)) != CUFFT_SUCCESS) {
+//				std::cout << "cufft plan error" << std::endl;
+//			}
+//
+//			if ((cufftExecR2C(plan, (cufftReal*)d_diff_local, (cufftComplex*)d_fft_local)) != CUFFT_SUCCESS) {
+//				std::cout << "cufft exec error" << std::endl;
+//			}
+//
+//			std::cout << " Process FFt" << std::endl;
+//			processFFT<<<gridDim, blockDim>>>(d_fft_local, d_fft_accum, tau_idx, width, height);
+//			//cudaMemcpy(print_buffer, d_fft_accum, width*height*sizeof(float), cudaMemcpyDeviceToHost);
+//		}
+//	}
 
 }
 
@@ -196,13 +253,90 @@ void RunDDM(float *out, VideoCapture cap, int width, int height, int frame_count
 	while (frame_count >= chunk_frames) {
 		std::cout << frame_count << " Frames left" << std::endl;
 		LoadVideoToBuffer(d_buffer, chunk_frames, cap, width, height);
-		analyseChunk(d_buffer, d_fftAccum, tau_count, chunk_frames, tau_vector, width, height, print_buffer);
+		analyseChunk(d_buffer, chunk_frames, d_fftAccum, tau_vector, tau_count, width, height, print_buffer);
 		frame_count -= chunk_frames;
 	}
 
 	cudaMemcpy(out, d_fftAccum, work_size, cudaMemcpyDeviceToHost);
 	std::cout<<"Done"<<std::endl;
 }
+
+void HARDCODEanalyseFFTHost(float *d_in, float *d_out, int *tau_vector, int tau_count, int width, int height, float *debug_buff=NULL) {
+    int w = width; int h = height;
+
+	// Generate q - vectors - Hard Coded
+	int q_count = 20;
+	float q_squared[20] = 	{ 1.        ,   3.6472384 ,   7.94985584,  13.90785234,  21.52122788, 30.78998247,  41.71411612,
+    							 54.29362881,  68.52852055,  84.41879134, 101.96444118, 121.16547007, 142.021878 , 164.53366499,
+								188.70083102, 214.52337611, 242.00130024, 271.13460343, 301.92328566, 334.36734694};
+	// Generate masks
+    int *px_count = new int[q_count](); // () initialises to zero
+    float *masks = new float[w * h * q_count];
+
+    float half_w, half_h;
+    half_h = height / 2.0;
+    half_w = width / 2.0;
+    float r_sqr, ratio;
+
+    // First Generate the radius masks
+    int shift_x, shift_y;
+    for (int q_idx = 0; q_idx < q_count; q_idx++) {
+        for (int x = 0; x < w; x++)
+        {
+            for (int y = 0; y < h; y++)
+            {
+                // Perform manual FFT shift
+                shift_x = (x + (int)half_w) % w;
+                shift_y = (y + (int)half_h) % h;
+
+                // Distance relative to centre
+                shift_x -= half_w;
+                shift_y -= half_h;
+
+                r_sqr = shift_x * shift_x + shift_y * shift_y;
+                ratio = r_sqr / q_squared[q_idx];
+
+                if (1 <= ratio && ratio <= 1.44) { // we want values from 1.0 * q to 1.2 * q
+                    masks[q_idx*w*h + y*w + x] = 1.0;
+                    px_count[q_idx] += 1;
+                } else {
+                    masks[q_idx*w*h + y*w + x] = 0.0;
+                }
+            }
+        }
+    }
+//    // Mask generation end
+//
+//    // Start analysis
+//    float *tau_frame;
+//    float val;
+//
+//    for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
+//        tau_frame = d_in + (w * h * tau_idx);
+//
+//        for (int q_idx = 0; q_idx < q_count; q_idx++) {
+//        	val = 0;
+//        	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
+//                for (int i = 0; i < w*h; i++) { 	// iterate through all pixels
+//                	val += d_in[w * h * tau_idx + i] * masks[w * h * tau_idx + i];
+//                }
+//                // Also should divide by chunk count
+//                val /= (float)px_count[q_idx]); // could be potential for overflow here
+//        	}
+//
+//        	iq_tau[q_idx * tau_count + tau_idx] = val;
+//        }
+//    }
+//
+//
+
+
+}
+
+
+
+
+
 
 void analyseFFTHost(float *h_in, float *iq_tau, int number_chunks, int tau_count, int* tau_vector, int width, int height) {
 	// Handles generation of masks
@@ -282,7 +416,7 @@ void analyseFFTHost(float *h_in, float *iq_tau, int number_chunks, int tau_count
                 val /= ((float)number_chunks * (float)px_count[q_idx]); // could be potential for overflow here
         	}
 
-        	iq_tau[q_idx * tau_count + tau_idx] += val;
+        	iq_tau[q_idx * tau_count + tau_idx] = val;
         }
     }
 
@@ -294,9 +428,9 @@ int main(int argc, char **argv)
 
 	int tau_count = 11;
 	int tau_vector [tau_count] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
-	int width = 128;
-	int height = 128;
-	int frame_count = 200;
+	int width = 512;
+	int height = 512;
+	int frame_count = 400;
 
 
 	float * out = new float [width * height * tau_count];
