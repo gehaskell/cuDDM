@@ -44,8 +44,11 @@ def i_vs_t(q_vector, tau_vec, iqt):
     fig, ax = plt.subplots()
     ax.set(xlabel=r"Lag time $\tau$", ylabel=r"I(q, $\tau$)")
 
+
     for idx, q in enumerate(q_vector):
-        ax.plot(tau_vec, iqt[idx], label=f"q = {q}")
+        if idx>10:
+            ax.plot(tau_vec, iqt[idx], label=f"q = {q}")
+
         
     ax.legend(loc="upper left")
 
