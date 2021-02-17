@@ -103,19 +103,16 @@ __global__ void AbsDifferenceParallelTaus(cufftReal *d_diff, float *d_buffer, in
 
 	int x = threadIdx.x + blockIdx.x * 32;
 	int y = threadIdx.y + blockIdx.y * 32;
-	int tau_idx = blockIdx.y;
+	int tau_idx = blockIdx.z;
 
 	if (x <= width-1 && y <= height-1 && tau_idx <= tau_count-1) {
-		int size = x * y;
+		int size = width * height;
 		int tau = d_tau_vector[tau_idx];
 
 		int frame_idx = 0; // here random behaviour to look into
 
-		float *d_frame1 = d_buffer + (frame_idx * size);
-		float *d_frame2 = d_frame1 + (tau * size);
-
 		int pos = y * width + x;
-		d_diff[tau_idx * size + pos] = abs(d_frame1[pos] - d_frame2[pos]);
+		d_diff[tau_idx * size + pos] = (cufftReal) abs(d_buffer[frame_idx * size + pos] - d_buffer[(frame_idx+tau) * size + pos]);
 	}
 	return;
 }
@@ -184,7 +181,7 @@ __global__ void processFFTParallelTaus(cufftComplex *d_data, float *d_fft, int w
 }
 
 
-void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_vector, int tau_count, cufftHandle plan, int width, int height, float *debug_buff=NULL) {
+void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_vector, int tau_count, int width, int height, float *debug_buff=NULL) {
 	// debug_buffer is a width * height *sizeof(float) buffer which can be printed
 	//	if (debug_buff != NULL) {
 	//		cudaMemcpy(debug_buff, <device ptr>, width*height*sizeof(float), cudaMemcpyDeviceToHost);
@@ -215,11 +212,10 @@ void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_ve
 	int grid_z = 1;
 
 	if (remaining_blocks > tau_count) {
-		std::cout << "Parallelising taus" << std::endl;
+		std::cout << "Parallelising Taus" << std::endl;
 		parallel_tau = true;
 		grid_z = tau_count;
 	}
-
 
 	dim3 gridDim(grid_x, grid_y, grid_z);
 	std::cout << gridDim.z << std::endl;
@@ -233,48 +229,85 @@ void analyseChunk(float *d_chunk_ptr, int frame_count, float *d_out, int *tau_ve
 	cudaMalloc((void **) &d_tau_vector, tau_count * sizeof(int));
 	cudaMemcpy(d_tau_vector, tau_vector, tau_count * sizeof(int), cudaMemcpyHostToDevice);
 
-	cufftReal *d_diff_local;
-	cudaMalloc((void **) &d_diff_local, tau_count * w * h * sizeof(cufftReal));
+	cufftReal *d_local_absdiff;
+	cudaMalloc((void **) &d_local_absdiff, tau_count * w * h * sizeof(cufftReal));
 
-	cufftComplex *d_fft_local;
-	cudaMalloc((void **) &d_fft_local, tau_count * w * (h / 2 + 1) * sizeof(cufftComplex));
+	cufftComplex *d_local_fft;
+	cudaMalloc((void **) &d_local_fft, tau_count * w * (h / 2 + 1) * sizeof(cufftComplex));
 
+	/// FFT set-up
+    cufftHandle plan;
+
+    int batch = tau_count;
+    int rank = 2;
+
+    int nRows = width;
+    int nCols = height;
+    int n[2] = {nRows, nCols};
+
+    int idist = nRows*nCols;
+    int odist = nRows*(nCols/2+1);
+
+    int inembed[] = {nRows, nCols};
+    int onembed[] = {nRows, nCols/2+1};
+
+    int istride = 1;
+    int ostride = 1;
+
+	if (cudaDeviceSynchronize() != cudaSuccess){
+		fprintf(stderr, "Cuda error: Failed to synchronize\n");
+		return;
+	}
+
+
+	if (cufftPlanMany(&plan, rank, n, inembed, istride, idist, onembed, ostride, odist, CUFFT_R2C, batch) != CUFFT_SUCCESS) {
+		printf("CUFFT Error: Plan error\n");
+		return;
+	}
 
 
 
 
 	// Main loop
-	AbsDifferenceParallelTaus<<<gridDim, blockDim>>>(d_diff_local, d_chunk_ptr, d_tau_vector, tau_count,frame_count, width, height);
+	//(cufftReal *d_diff, float *d_buffer, int* d_tau_vector, int tau_count, int frame_count, int width, int height)
+	AbsDifferenceParallelTaus<<<gridDim, blockDim>>>(d_local_absdiff, d_chunk_ptr, d_tau_vector, tau_count,frame_count, width, height);
 
-	// FFT execute
-	if ((cufftExecR2C(plan, d_diff_local, d_fft_local)) != CUFFT_SUCCESS) {
-	    switch (cufftExecR2C(plan, d_diff_local, d_fft_local))
-	    {
-	        case CUFFT_SUCCESS:
-	            printf("CUFFT_SUCCESS");
 
-	        case CUFFT_INVALID_PLAN:
-	        	printf("CUFFT_INVALID_PLAN");
-
-	        case CUFFT_ALLOC_FAILED:
-	        	printf( "CUFFT_ALLOC_FAILED");
-
-	        case CUFFT_INVALID_TYPE:
-	        	printf( "CUFFT_INVALID_TYPE");
-
-	        case CUFFT_INVALID_VALUE:
-	        	printf( "CUFFT_INVALID_VALUE");
-
-	        case CUFFT_INTERNAL_ERROR:
-	        	printf( "CUFFT_INTERNAL_ERROR");
-
-	        case CUFFT_EXEC_FAILED:
-	        	printf( "CUFFT_EXEC_FAILED");
+	if (cudaDeviceSynchronize() != cudaSuccess){
+		fprintf(stderr, "Cuda error: Failed to synchronize\n");
 		return;
-	    }
 	}
 
-	processFFTParallelTaus<<<gridDim, blockDim>>>(d_fft_local, d_out, width, height);
+
+	// FFT execute
+	if ((cufftExecR2C(plan, d_local_absdiff, d_local_fft)) != CUFFT_SUCCESS) {
+		printf("CUFFT Error: Exec error\n");
+		return;
+	}
+
+
+	if (cudaDeviceSynchronize() != cudaSuccess){
+		fprintf(stderr, "Cuda error: Failed to synchronize\n");
+		return;
+	}
+
+	processFFTParallelTaus<<<gridDim, blockDim>>>(d_local_fft, d_out, width, height);
+
+
+	if (debug_buff != NULL) {
+		cudaMemcpy(debug_buff, d_local_fft, width*height*sizeof(float), cudaMemcpyDeviceToHost);
+		return;
+	}
+
+	if (cudaDeviceSynchronize() != cudaSuccess){
+		fprintf(stderr, "Cuda error: Failed to synchronize\n");
+		return;
+	}
+
+
+	cudaFree(d_local_absdiff); cudaFree(d_local_fft); cudaFree(d_tau_vector);
+	cufftDestroy(plan);
+
 	return;
 
 
@@ -359,29 +392,6 @@ void RunDDM(float *out, VideoCapture cap, int width, int height, int frame_count
 	cudaMalloc((void **) &d_fftAccum, work_size);
 
 
-	/// FFT set-up
-    cufftHandle plan;
-
-    int batch = tau_count;
-    int rank = 2;
-
-    int nRows = width;
-    int nCols = height;
-    int n[2] = {nRows, nCols};
-
-    int idist = nRows*nCols;
-    int odist = nRows*(nCols/2+1);
-
-    int inembed[] = {nRows, nCols};
-    int onembed[] = {nRows, nCols/2+1};
-
-    int istride = 1;
-    int ostride = 1;
-
-	if (cufftPlanMany(&plan, rank, n, inembed, istride, idist, onembed, ostride, odist, CUFFT_R2C, batch) != CUFFT_SUCCESS) {
-		printf("CUFFT Error: Plan error\n");
-		return;
-	}
 
 
 	// At the moment we run each operation in series - can parallelise later
@@ -389,7 +399,7 @@ void RunDDM(float *out, VideoCapture cap, int width, int height, int frame_count
 	while (frame_count >= chunk_frames) {
 		std::cout << frame_count << " Frames left" << std::endl;
 		LoadVideoToBuffer(d_buffer, chunk_frames, cap, width, height);
-		analyseChunk(d_buffer, chunk_frames, d_fftAccum, tau_vector, tau_count,plan, width, height, print_buffer);
+		analyseChunk(d_buffer, chunk_frames, d_fftAccum, tau_vector, tau_count, width, height, print_buffer);
 		frame_count -= chunk_frames;
 	}
 
@@ -564,8 +574,8 @@ int main(int argc, char **argv)
 
 	int tau_count = 20;
 	int tau_vector [tau_count] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,15,16,17,18,19, 20, 21};
-	int width = 128;
-	int height = 128;
+	int width = 64;
+	int height = 64;
 	int frame_count = 300;
 
 
@@ -590,7 +600,7 @@ int main(int argc, char **argv)
 
 	HARDCODEanalyseFFTHost(data, iq_tau, 20*30, tau_vector, tau_count, width, height, print_buffer);
 
-	// write_to_file(print_buffer, width, height);
+	write_to_file(print_buffer, width, height);
 	// outputting iqtau
     std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/iqt.txt");
 
