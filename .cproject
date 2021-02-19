@@ -21,6 +21,7 @@
 							<tool id="nvcc.linker.1059705765" name="NVCC linker" superClass="nvcc.linker">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="nvcc.linker.libs.137930840" name="Libraries (-l)" superClass="nvcc.linker.libs" useByScannerDiscovery="false" valueType="libs">
 									<listOptionValue builtIn="false" value="cufft"/>
+									<listOptionValue builtIn="false" value="nvToolsExt"/>
 									<listOptionValue builtIn="false" value="opencv_cudev"/>
 									<listOptionValue builtIn="false" value="opencv_phase_unwrapping"/>
 									<listOptionValue builtIn="false" value="opencv_superres"/>
@@ -151,7 +152,14 @@
 		<project id="cuDDM_stream.com.nvidia.cuda.toolchain.linux.build.exe.475209257" name="Executable" projectType="com.nvidia.cuda.toolchain.linux.build.exe"/>
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
-	<storageModule moduleId="refreshScope"/>
+	<storageModule moduleId="refreshScope" versionNumber="2">
+		<configuration configurationName="Debug">
+			<resource resourceType="PROJECT" workspacePath="/cuDDM_stream"/>
+		</configuration>
+		<configuration configurationName="Release">
+			<resource resourceType="PROJECT" workspacePath="/cuDDM_stream"/>
+		</configuration>
+	</storageModule>
 	<storageModule moduleId="scannerConfiguration">
 		<autodiscovery enabled="true" problemReportingEnabled="true" selectedProfileId=""/>
 		<scannerConfigBuildInfo instanceId="com.nvidia.cuda.toolchain.linux.configuration.debug.1465572114;com.nvidia.cuda.toolchain.linux.configuration.debug.1465572114.;nvcc.compiler.452443575;com.nvidia.cuda.toolchain.input.c.1000005369">
@@ -164,4 +172,5 @@
 			<autodiscovery enabled="true" problemReportingEnabled="true" selectedProfileId="com.nvidia.cuda.ide.build.NVCCPerProjectProfile"/>
 		</scannerConfigBuildInfo>
 	</storageModule>
+	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
 </cproject>
