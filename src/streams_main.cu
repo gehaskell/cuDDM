@@ -1,6 +1,8 @@
 //TODO: clean up print statements - switch errors to fprintf
 //TODO: probably causes memory leak
 
+#include "movie_reader.h"
+
 #include <iostream>
 #include <stdio.h>
 #include <cuda_runtime.h>
@@ -26,13 +28,17 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 using namespace cv;
 
-__global__ void AbsDifference(cufftReal *d_diff, float *d_frame1, float *d_frame2, int width, int height) {
+__global__ void AbsDifference(cufftReal *d_diff, unsigned char *d_frame1, unsigned char *d_frame2,
+		int img_width, int img_height,
+		int out_width, int out_height,
+		int bytes_per_px=1)
+	{
+	// If more than one byte per pixel, then we just take first channel
 	int x = threadIdx.x + blockIdx.x * blockSize_x;
 	int y = threadIdx.y + blockIdx.y * blockSize_y;
 
-	if (x <= width-1 && y <= height-1) {
-		int pos_offset = y * width + x;
-		d_diff[pos_offset] = abs(d_frame1[pos_offset] - d_frame2[pos_offset]);
+	if (x <= out_width-1 && y <= out_height-1) {
+		d_diff[y * out_width + x] = (float)abs(d_frame1[(y * img_width + x) * bytes_per_px] - d_frame2[(y * img_width + x)  * bytes_per_px]) ;
 	}
 	return;
 }
@@ -123,7 +129,7 @@ bool LoadVideoToBuffer(float *h_ptr, int frame_count, VideoCapture cap, int w, i
 }
 
 
-void processChunk(cudaStream_t stream, float *d_ptr,
+void processChunk(cudaStream_t stream, unsigned char *d_ptr,
 		int frame_count,
 		float *d_out,
 		int *tau_vector,
@@ -131,7 +137,8 @@ void processChunk(cudaStream_t stream, float *d_ptr,
 		cufftReal *d_abs_workspace,
 		cufftComplex *d_fft_workspace,
 		cufftHandle plan,
-		int width, int height,
+		int img_width, int img_height,
+		int out_width, int out_height,
 		int repeat_count = 50, float *debug_buff=NULL) {
 
 	// debug_buffer is a width * height *sizeof(float) buffer which can be printed
@@ -141,17 +148,14 @@ void processChunk(cudaStream_t stream, float *d_ptr,
 	//	}
 	// d_out size: tau_count * width * height * sizeof(float)
 
-	int w = width;
-	int h = height;
-
 	//printf("chunk analysis (%d frames).\n", frame_count);
 
 	// Max 1024 (32 x 32) threads per block hence multiple blocks to operate on a frame
 	// Max number of thread blocks is 65536)
 
 	dim3 blockDim(blockSize_x, blockSize_y, 1);
-	int grid_x = (int) ceil(width/(float)blockSize_x);
-	int grid_y = (int) ceil(width/(float)blockSize_y);
+	int grid_x = (int) ceil(out_width/(float)blockSize_x);
+	int grid_y = (int) ceil(out_height/(float)blockSize_y);
 
 	dim3 gridDim(grid_x, grid_y, 1);
 
@@ -163,7 +167,7 @@ void processChunk(cudaStream_t stream, float *d_ptr,
 
 	// Main loop
 	int tau, idx1, idx2;
-	float *d_frame1, *d_frame2;
+	unsigned char *d_frame1, *d_frame2;
 	cufftComplex *d_local_fft;
 	cufftReal *d_local_absdiff;
 
@@ -171,24 +175,27 @@ void processChunk(cudaStream_t stream, float *d_ptr,
 		for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
 			tau = tau_vector[tau_idx];
 
-			d_local_fft = d_fft_workspace + (tau_idx * w * (h / 2 + 1));
-			d_local_absdiff = d_abs_workspace + (tau_idx * w * h);
+			d_local_fft = d_fft_workspace + (tau_idx * out_width * (out_height / 2 + 1));
+			d_local_absdiff = d_abs_workspace + (tau_idx * out_width * out_height);
 
 			idx1 = rand() % (frame_count - tau);
 			idx2 = idx1 + tau;
+
 			//std::cout << "tau: " << tau << " idxs: " << idx1 << ", " << idx2 << std::endl;
 
-			d_frame1 = d_ptr + (idx1 * w * h);	// float pointer to frame 1
-			d_frame2 = d_ptr + (idx2 * w * h);
+			d_frame1 = d_ptr + (idx1 * img_width * img_height);	// float pointer to frame 1
+			d_frame2 = d_ptr + (idx2 * img_width * img_height);
 
-			AbsDifference<<<gridDim, blockDim, 0, stream >>>(d_local_absdiff, d_frame1, d_frame2, w, h); // find absolute difference
+
+			AbsDifference<<<gridDim, blockDim, 0, stream >>>(d_local_absdiff, d_frame1, d_frame2, img_width, img_height, out_width, out_height); // find absolute difference
 
 			//FFT execute
 			if ((cufftExecR2C(plan, d_local_absdiff, d_local_fft)) != CUFFT_SUCCESS) {
 				std::cout << "cuFFT Exec Error\n" << std::endl;
 			}
 
-			processFFT<<<gridDim, blockDim, 0, stream>>>(d_local_fft, d_out, tau_idx, w, h); // process FFT (i.e. normalise and add to accumulator)
+			processFFT<<<gridDim, blockDim, 0, stream>>>(d_local_fft, d_out, tau_idx, out_width, out_height); // process FFT (i.e. normalise and add to accumulator)
+
 		}
 	}
 
@@ -200,14 +207,14 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
     int w = width; int h = height;
 
 	// Generate q - vectors - Hard Coded
-	int q_count = 50;
+	int q_count = 20;
 
 	float q_squared[q_count];
 	float q_vector[q_count];
 
 	for (int i = 0; i < q_count; i++) {
 		//std::cout << 50 * ((float)i /20.0) << std::endl;
-		q_vector[i] = 100 * ((float)(i+1) /20.0);
+		q_vector[i] =  40.0 * ((float)(i+1) /q_count);
 		q_squared[i] = q_vector[i] * q_vector[i];
 	}
 
@@ -262,12 +269,14 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
         	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
 
         		for (int i = 0; i < w*h; i++) { 	// iterate through all pixels
-                	val += d_in[w * h * tau_idx + i] * masks[w * h * q_idx + i];
+                	val += d_in[w * h * tau_idx + i] * masks[w * h * q_idx + i] ;
                 	if (masks[w * h * q_idx + i]) {px += 1;}
                 }
                 // Also should divide by chunk count
                 val /= (float)px_count[q_idx]; // could be potential for overflow here
                 val /= (float)norm_factor;
+        	} else {
+        		printf("q %d has zero mask pixels", q_idx);
         	}
 
         	iq_tau[q_idx * tau_count + tau_idx] = val;
@@ -295,6 +304,7 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
 		}
 
 		myfile.close();
+		printf("outputted to /home/ghaskell/projects_Git/cuDDM_streams/data/iqt.txt");
     } else {
     	std::cout << "Unable to open file" << std::endl;
     	return;
@@ -304,133 +314,158 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
 
 
 int main(){
-	for (int x = 0; x < 1; x++) {
-		printf("Grid dimensions %d, %d, %d\n", blockSize_x, blockSize_y, 1);
+	auto start_time = std::chrono::high_resolution_clock::now();
 
-		auto t1 = std::chrono::high_resolution_clock::now();
+	FILE *moviefile;
+	if ( !(moviefile = fopen("/media/ghaskell/Slow Drive/colloid_vids/blue_colloids_1um11feb160000.movie", "rb" ))) {
+		fprintf(stderr, "Couldn't open movie file.\n" );
+		exit( EXIT_FAILURE );
+	}
 
-		int w = 1024;
-		int h = 1024;
-		int buffer_frames = 20;
-		int total_frames = 200;
-		int tau_count = 15;
-		int tau_vector [tau_count] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-		int repeat_count = 50;
-		VideoCapture cap("/home/ghaskell/projects_Git/cuDDM/data/test.mp4");
+	video_info_struct vid_info = initFile(moviefile);
+	int img_width = vid_info.size_x;
+	int img_height = vid_info.size_y;
+	int bpp = vid_info.bpp;
 
-		// Initialisation
-		int iterations = total_frames / buffer_frames;
-		int kiterations = iterations;
-		bool read_ok;
+	int out_width = 1024;
+	int out_height = 1024;
 
-		float *h_buffer1, *h_buffer2;
-		float *d_buffer1, *d_buffer2;
-		float *h_out, *d_out;
+	int buffer_frames = 20;
+	int total_frames = 1000;
+	int tau_count = 15;
+	int tau_vector [tau_count] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+	int repeat_count = 50;
 
-		int buffer_size = sizeof(float) * buffer_frames * w * h;
+	//float *debug_buffer = new float [out_width * out_height * tau_count]; // DEBUG
 
-		gpuErrchk(cudaHostAlloc((void **) &h_buffer1, buffer_size, cudaHostAllocDefault));
-		gpuErrchk(cudaHostAlloc((void **) &h_buffer2, buffer_size, cudaHostAllocDefault));
+	// Initialisation
+	int iterations = total_frames / buffer_frames;
+	int kiterations = iterations;
+	bool read_ok = true;
 
-		gpuErrchk(cudaMalloc((void **) &d_buffer1, buffer_size));
-		gpuErrchk(cudaMalloc((void **) &d_buffer2, buffer_size));
+	unsigned char *h_buffer1, *h_buffer2;
+	unsigned char *d_buffer1, *d_buffer2;
+	float *h_out, *d_out;
 
-		gpuErrchk(cudaMalloc((void **) &d_out, sizeof(float) * tau_count* w * h));
-		h_out = new float[tau_count* w * h];
+	int buffer_size = sizeof(unsigned char) * buffer_frames * img_width * img_height * bpp; // size of each raw image frame * number of frames
 
-		float *d_data = d_buffer1;
-		float *h_data = h_buffer1;
+	gpuErrchk(cudaHostAlloc((void **) &h_buffer1, buffer_size, cudaHostAllocDefault));
+	gpuErrchk(cudaHostAlloc((void **) &h_buffer2, buffer_size, cudaHostAllocDefault));
 
-		float *d_next = d_buffer2;
-		float *h_next = h_buffer2;
+	gpuErrchk(cudaMalloc((void **) &d_buffer1, buffer_size));
+	gpuErrchk(cudaMalloc((void **) &d_buffer2, buffer_size));
 
-		cudaStream_t stream1, stream2;
-		cudaStreamCreate(&stream1); cudaStreamCreate(&stream2);
-		cudaStream_t *work_stream = &stream1;
-		cudaStream_t *next_stream = &stream2;
+	gpuErrchk(cudaMalloc((void **) &d_out, sizeof(float) * tau_count * out_width * out_height));
+	h_out = new float[tau_count * out_width * out_height];
 
-		// Workspace
-		cufftReal *d_abs_workspace1;
-		cufftReal *d_abs_workspace2;
-		cudaMalloc((void **) &d_abs_workspace1, tau_count * w * h * sizeof(cufftReal));
-		cudaMalloc((void **) &d_abs_workspace2, tau_count * w * h * sizeof(cufftReal));
+	unsigned char *d_data = d_buffer1;
+	unsigned char *h_data = h_buffer1;
 
-		cufftComplex *d_fft_workspace1;
-		cufftComplex *d_fft_workspace2;
-		cudaMalloc((void **) &d_fft_workspace1, tau_count * w * (h / 2 + 1) * sizeof(cufftComplex));
-		cudaMalloc((void **) &d_fft_workspace2, tau_count * w * (h / 2 + 1) * sizeof(cufftComplex));
+	unsigned char *d_next = d_buffer2;
+	unsigned char *h_next = h_buffer2;
 
-		cufftComplex *d_fft_current = d_fft_workspace1;
-		cufftComplex *d_fft_next = d_fft_workspace2;
+	cudaStream_t stream1, stream2;
+	cudaStreamCreate(&stream1); cudaStreamCreate(&stream2);
+	cudaStream_t *work_stream = &stream1;
+	cudaStream_t *next_stream = &stream2;
 
-		cufftReal *d_abs_current = d_abs_workspace1;
-		cufftReal *d_abs_next = d_abs_workspace1;
+	// Workspace
+	cufftReal *d_abs_workspace1;
+	cufftReal *d_abs_workspace2;
+	cudaMalloc((void **) &d_abs_workspace1, tau_count * out_width * out_height * sizeof(cufftReal));
+	cudaMalloc((void **) &d_abs_workspace2, tau_count * out_width * out_height * sizeof(cufftReal));
 
-		// cuFFT plan
-		cufftHandle plan;
-		if ((cufftPlan2d(&plan, w, h, CUFFT_R2C)) != CUFFT_SUCCESS) {
-			fprintf(stderr, "cuFFT Error: Plan failure.\n");
-		}
+	cufftComplex *d_fft_workspace1;
+	cufftComplex *d_fft_workspace2;
+	cudaMalloc((void **) &d_fft_workspace1, tau_count * out_width * (out_height / 2 + 1) * sizeof(cufftComplex));
+	cudaMalloc((void **) &d_fft_workspace2, tau_count * out_width * (out_height / 2 + 1) * sizeof(cufftComplex));
 
-		// Main loop
+	cufftComplex *d_fft_current = d_fft_workspace1;
+	cufftComplex *d_fft_next = d_fft_workspace2;
 
-		read_ok = LoadVideoToBuffer(h_data, buffer_frames, cap, w, h); // puts chunk data into pinned host memory
+	cufftReal *d_abs_current = d_abs_workspace1;
+	cufftReal *d_abs_next = d_abs_workspace1;
 
-		while (read_ok && iterations > 0) {
-			gpuErrchk(cudaMemcpyAsync(d_data, h_data, buffer_size, cudaMemcpyHostToDevice, *work_stream)); // copy buffer to device
+	// cuFFT plan
+	cufftHandle plan;
+	if ((cufftPlan2d(&plan, out_width, out_height, CUFFT_R2C)) != CUFFT_SUCCESS) {
+		fprintf(stderr, "cuFFT Error: Plan failure.\n");
+	}
 
-			// PROCESS FRAME - use work stream
-			processChunk(*work_stream, d_data, buffer_frames, d_out, tau_vector, tau_count, d_abs_current, d_fft_current, plan, w, h, repeat_count); // repeat count optional
+	// Main loop
 
-			gpuErrchk(cudaStreamSynchronize(*next_stream)); // prevent overrun
+	//read_ok = LoadVideoToBuffer(h_data, buffer_frames, cap, w, h); // puts chunk data into pinned host memory
 
-			read_ok = LoadVideoToBuffer(h_next, buffer_frames, cap, w, h); // load next while GPU processing current
+	nvtxRangePush("Loading frames to file");
+	loadFileToHost(moviefile, h_data, vid_info, buffer_frames);
+    nvtxRangePop();
 
-			// Swap working and secondary streams
-			float *tmp = h_data;
-			h_data = h_next;
-			h_next = tmp;
+	while (read_ok && iterations > 0) {
+		gpuErrchk(cudaMemcpyAsync(d_data, h_data, buffer_size, cudaMemcpyHostToDevice, *work_stream)); // copy buffer to device
 
-			tmp = d_data;
-			d_data = d_next;
-			d_next = tmp;
+		// PROCESS FRAME - use work stream
+		processChunk(*work_stream, d_data, buffer_frames, d_out, tau_vector, tau_count, d_abs_current, d_fft_current, plan, img_width, img_height, out_width, out_height, repeat_count); // repeat count optional
 
-			cudaStream_t *st_tmp = work_stream;
-			work_stream = next_stream;
-			next_stream = st_tmp;
+		gpuErrchk(cudaStreamSynchronize(*next_stream)); // prevent overrun
 
-			cufftComplex *fft_tmp = d_fft_current;
-			d_fft_current = d_fft_next;
-			d_fft_next = fft_tmp;
+		//read_ok = LoadVideoToBuffer(h_next, buffer_frames, cap, w, h); // load next while GPU processing current
+		nvtxRangePush("Loading frames to file");
+		loadFileToHost(moviefile, h_data, vid_info, buffer_frames);
+	    nvtxRangePop();
 
-			cufftReal *abs_tmp = d_abs_current;
-			d_abs_current = d_abs_next;
-			d_abs_next = abs_tmp;
+		// Swap working and secondary streams
+		unsigned char *tmp = h_data;
+		h_data = h_next;
+		h_next = tmp;
 
-			//printf("chunk complete (%d \\ %d))\n", kiterations- iterations + 1, kiterations);
-			iterations--;
+		tmp = d_data;
+		d_data = d_next;
+		d_next = tmp;
 
-		}
+		cudaStream_t *st_tmp = work_stream;
+		work_stream = next_stream;
+		next_stream = st_tmp;
 
-		gpuErrchk(cudaMemcpy(h_out, d_out, sizeof(float) * tau_count* w * h, cudaMemcpyDeviceToHost));
+		cufftComplex *fft_tmp = d_fft_current;
+		d_fft_current = d_fft_next;
+		d_fft_next = fft_tmp;
 
-		cudaFree(h_buffer1); cudaFree(h_buffer2);
-		cudaFree(d_buffer1); cudaFree(d_buffer2);
-		cudaFree(d_out);
-		cudaFree(d_abs_workspace1); cudaFree(d_abs_workspace2);
-		cudaFree(d_fft_workspace1); cudaFree(d_fft_workspace2);
-		cufftDestroy(plan);
+		cufftReal *abs_tmp = d_abs_current;
+		d_abs_current = d_abs_next;
+		d_abs_next = abs_tmp;
 
-
-		//printf("Done\n");
-
-		auto t2 = std::chrono::high_resolution_clock::now();
-		auto duration = std::chrono::duration_cast<std::chrono::microseconds>( t2 - t1 ).count();
-		std::cout << "END (time elapsed: " << (float)duration/1000000.0 << " seconds.)"<< std::endl;
-
-		HARDCODEanalyseFFTHost(h_out, repeat_count*kiterations, tau_vector, tau_count, w, h);
-
-
+		printf("chunk complete (%d \\ %d)\n", kiterations- iterations + 1, kiterations);
+		iterations--;
 
 	}
+
+	gpuErrchk(cudaMemcpy(h_out, d_out, sizeof(float) * tau_count* out_width * out_height, cudaMemcpyDeviceToHost));
+
+	cudaFree(h_buffer1); cudaFree(h_buffer2);
+	cudaFree(d_buffer1); cudaFree(d_buffer2);
+	cudaFree(d_out);
+	cudaFree(d_abs_workspace1); cudaFree(d_abs_workspace2);
+	cudaFree(d_fft_workspace1); cudaFree(d_fft_workspace2);
+	cufftDestroy(plan);
+
+
+//	std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/data2.txt");
+//	if (myfile.is_open()) {
+//		for (int x = 0; x < out_width * out_height * tau_count; x++) {
+//			myfile << h_out[x] <<" ";
+//		}
+//		myfile << std::endl;
+//	}
+//	myfile.close();
+
+
+	auto t2 = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>( t2 - start_time ).count();
+	std::cout << "END (time elapsed: " << (float)duration/1000000.0 << " seconds.)"<< std::endl;
+
+	HARDCODEanalyseFFTHost(h_out, repeat_count*kiterations, tau_vector, tau_count, out_width, out_height);
+
+
+
+
 }

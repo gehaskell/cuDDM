@@ -1,3 +1,6 @@
+/*
+#include "movie_reader.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -7,6 +10,7 @@
 #include <time.h>
 #include <stdbool.h>
 #include <libgen.h>
+
 
 //
 // Common camera defines
@@ -99,18 +103,18 @@
 
 //
 // Common camera frame struct
-//
-struct camera_save_struct {
-	//
-	// Common stuff
-	//
-	uint32_t magic; // 'AndO'
-	uint32_t version;
-	uint32_t type; // Camera type
-	uint32_t pixelmode; // Pixel mode
-	uint32_t length_header; // Header data in bytes ( Everything except image data )
-	uint32_t length_data; // Total data length in bytes;
-};
+////
+//struct camera_save_struct {
+//	//
+//	// Common stuff
+//	//
+//	uint32_t magic; // 'AndO'
+//	uint32_t version;
+//	uint32_t type; // Camera type
+//	uint32_t pixelmode; // Pixel mode
+//	uint32_t length_header; // Header data in bytes ( Everything except image data )
+//	uint32_t length_data; // Total data length in bytes;
+//};
 
 //
 // IIDC movie frame struct
@@ -310,20 +314,10 @@ struct ximea_save_struct {
 
 #define NAMELENGTH 100
 
-camera_save_struct loadToHost(char *h_image_buffer, int frame_count, int w, int h) {
-
-	// Setup
-	char filename[] = "FILENAME - FILL IN";
-	FILE *moviefile; // file-stream for movie file
-
-	// Read moviefile
-	if ( !(moviefile = fopen(filename, "rb" ))) {
-		printf( "Couldn't open movie file.\n" );
-		exit( EXIT_FAILURE );
-	}
-
+bool initialiseFile(FILE* moviefile) {
 	// Find the beginning of binary data, it won't work if "TemI" is written in the header.
-	long offset = 0;
+	long magic_offset = 0;
+
 	bool found = false;
 	uint32_t magic;
 
@@ -333,108 +327,201 @@ camera_save_struct loadToHost(char *h_image_buffer, int frame_count, int w, int 
 			break;
 		}
 		offset++;
+		fseek( moviefile, offset, SEEK_SET );
 	}
 
 	fseek(moviefile, offset, SEEK_SET);
+
 	camera_save_struct camera_frame;
+	if (fread( &camera_frame, sizeof( struct camera_save_struct ), 1, moviefile ) != 1 ) {
+		fprintf(stderr, "Corrupted header at offset %d\n", ftell(moviefile));
+		exit(EXIT_FAILURE);
+	}
 
-	// Main read
-	// If we have found magic value
-	if (found) {
-		int frame_index = 0;
+	// Check read is as expected
+	if (camera_frame.magic != CAMERA_MOVIE_MAGIC) {
+		int offset = ftell(moviefile);
+		fprintf(stderr, "Wrong magic at offset %d\n", offset );
+		exit( EXIT_FAILURE );
+	}
 
-		// Read the camera frame information directly into struct
-		while (frame_index<frame_count && fread( &camera_frame, sizeof( struct camera_save_struct ), 1, moviefile ) == 1 ) { // lazy evaluation prevents reading too many frames
-			// Check read is as expected
-			if (camera_frame.magic != CAMERA_MOVIE_MAGIC) {
-				offset = ftell(moviefile);
-				fprintf(stderr, "Wrong magic at offset %lu\n", offset );
-				exit( EXIT_FAILURE );
-			}
-
-			if (camera_frame.version != CAMERA_MOVIE_VERSION) {
-				fprintf(stderr, "Unsupported version %u\n", camera_frame.version );
-				exit( EXIT_FAILURE );
-			}
-
-			// Go to the beginning of the frame for easier reading
-			fseek(moviefile, -sizeof( struct camera_save_struct ), SEEK_CUR );
+	if (camera_frame.version != CAMERA_MOVIE_VERSION) {
+		fprintf(stderr, "Unsupported version %u\n", camera_frame.version );
+		exit( EXIT_FAILURE );
+	}
 
 
-			struct andor_save_struct andor_frame;
-			struct ximea_save_struct ximea_frame;
-
-
-			// Read the header
-			uint32_t size_x, size_y;
-
-			switch (camera_frame.type) {
-				case CAMERA_TYPE_IIDC:
-					struct iidc_save_struct iidc_frame;
-					if ( fread( &iidc_frame, IIDC_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
-						offset = ftell( moviefile );
-						printf( "Corrupted header at offset %lu\n", offset );
-						exit( EXIT_FAILURE );
-					}
-					size_x = iidc_frame.i_size_x;
-					size_y = iidc_frame.i_size_y;
-					//printf( "%lu\n", iidc_frame.i_timestamp );
-					break;
-				case CAMERA_TYPE_ANDOR:
-					if ( fread( &andor_frame, ANDOR_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
-						offset = ftell( moviefile );
-						printf( "Corrupted header at offset %lu\n", offset );
-						exit( EXIT_FAILURE );
-					}
-					size_x = ( andor_frame.a_x_end - andor_frame.a_x_start + 1 ) / andor_frame.a_x_bin;
-					size_y = ( andor_frame.a_y_end - andor_frame.a_y_start + 1 ) / andor_frame.a_y_bin;
-					break;
-				case CAMERA_TYPE_XIMEA:
-					if ( fread( &ximea_frame, XIMEA_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
-							offset = ftell( moviefile );
-							printf( "Corrupted header at offset %lu\n", offset );
-							exit( EXIT_FAILURE );
-						}
-					size_x = ximea_frame.x_size_x;
-					size_y = ximea_frame.x_size_y;
-					break;
-				default:
-					printf( "Unsupported camera.\n" );
-					exit( EXIT_FAILURE );
-					break;
-
-			}
-			// Data depth
-			int bpp;
-			if (camera_frame.pixelmode == CAMERA_PIXELMODE_MONO_8)
-				bpp = 1;
-			else
-				bpp = 2;
-
-			char *h_current = h_image_buffer + size_x * size_y * frame_index;
-
-			// Read the data
-			printf("%d * %d * %d = %d", size_x, size_y, bpp, camera_frame.length_data);
-
- 			if (fread(h_current, w * h * bpp, 1, moviefile ) != 1 ) {
-				offset = ftell( moviefile );
-				fprintf(stderr, "Corrupted data at offset %lu\n", offset);
+	switch (camera_frame.type) {
+		case CAMERA_TYPE_IIDC:
+			struct iidc_save_struct iidc_frame;
+			if (fread(&iidc_frame, IIDC_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1) {
+				fprintf(stderr, "Corrupted header at offset %d\n", ftell(moviefile));
 				exit(EXIT_FAILURE);
 			}
+			size_x = iidc_frame.i_size_x;
+			size_y = iidc_frame.i_size_y;
+			break;
 
-			// Convert to little endian data if needed
-			if ( camera_frame.pixelmode == CAMERA_PIXELMODE_MONO_16BE ) {
-				char c;
-				for (int j = 0; j < size_x * size_y; j++ ) {
-					c = h_current[2*j];
-					h_current[2*j] = h_current[2*j+1];
-					h_current[2*j+1] = c;
-				}
+		case CAMERA_TYPE_ANDOR:
+			struct andor_save_struct andor_frame;
+			if (fread(&andor_frame, ANDOR_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1) {
+				fprintf(stderr, "Corrupted header at offset %d\n", ftell(moviefile));
+				exit(EXIT_FAILURE);
 			}
+			size_x = (andor_frame.a_x_end - andor_frame.a_x_start + 1) / andor_frame.a_x_bin;
+			size_y = (andor_frame.a_y_end - andor_frame.a_y_start + 1) / andor_frame.a_y_bin;
+			break;
 
-			frame_index++;
+		case CAMERA_TYPE_XIMEA:
+			struct ximea_save_struct ximea_frame;
+			if (fread( &ximea_frame, XIMEA_MOVIE_HEADER_LENGTH, 1, moviefile) != 1) {
+				fprintf(stderr, "Corrupted header at offset %d\n", ftell(moviefile));
+				exit(EXIT_FAILURE);
+			}
+			size_x = ximea_frame.x_size_x;
+			size_y = ximea_frame.x_size_y;
+			break;
+
+		default:
+			fprintf(stderr, "Unsupported camera.\n" );
+			exit( EXIT_FAILURE );
+			break;
+	}
+
+	// Data depth
+	int bpp;
+	if (camera_frame.pixelmode == CAMERA_PIXELMODE_MONO_8)
+		bpp = 1;
+	else
+		bpp = 2;
+
+	// return x / y size / bpp
+	return found;
+}
+
+
+
+void loadFileToHost(FILE* moviefile, unint32_t type, char *h_buffer, int num_frames, int size_x, int size_y) {
+	int frame_index = 0;
+
+	uint32_t size_x, size_y;
+
+
+
+	while (frame_index < num_frames) {
+
+	}
+
+
+
+}
+
+
+
+
+camera_save_struct loadToHost(FILE* moviefile, char *h_image_buffer, int frame_count, int w, int h) {
+	// Main read
+	// If we have found magic value
+	int frame_index = 0;
+	camera_save_struct camera_frame;
+
+	// Read the camera frame information directly into struct
+	while (frame_index < frame_count && fread( &camera_frame, sizeof( struct camera_save_struct ), 1, moviefile ) == 1 ) { // lazy evaluation prevents reading too many frames
+		printf("Reading frame %d\n", frame_index);
+		// Check read is as expected
+		if (camera_frame.magic != CAMERA_MOVIE_MAGIC) {
+			int offset = ftell(moviefile);
+			fprintf(stderr, "Wrong magic at offset %d\n", offset );
+			exit( EXIT_FAILURE );
 		}
+
+		if (camera_frame.version != CAMERA_MOVIE_VERSION) {
+			fprintf(stderr, "Unsupported version %u\n", camera_frame.version );
+			exit( EXIT_FAILURE );
+		}
+
+		// Go to the beginning of the frame for easier reading
+		fseek(moviefile, -sizeof( struct camera_save_struct ), SEEK_CUR );
+
+
+		struct andor_save_struct andor_frame;
+		struct ximea_save_struct ximea_frame;
+
+
+		// Read the header
+		uint32_t size_x, size_y;
+
+		switch (camera_frame.type) {
+			case CAMERA_TYPE_IIDC:
+				struct iidc_save_struct iidc_frame;
+				if ( fread( &iidc_frame, IIDC_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
+					int offset = ftell( moviefile );
+					printf( "Corrupted header at offset %d\n", offset );
+					exit( EXIT_FAILURE );
+				}
+				size_x = iidc_frame.i_size_x;
+				size_y = iidc_frame.i_size_y;
+				//printf( "%lu\n", iidc_frame.i_timestamp );
+				break;
+			case CAMERA_TYPE_ANDOR:
+				if ( fread( &andor_frame, ANDOR_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
+					int offset = ftell( moviefile );
+					printf( "Corrupted header at offset %d\n", offset );
+					exit( EXIT_FAILURE );
+				}
+				size_x = ( andor_frame.a_x_end - andor_frame.a_x_start + 1 ) / andor_frame.a_x_bin;
+				size_y = ( andor_frame.a_y_end - andor_frame.a_y_start + 1 ) / andor_frame.a_y_bin;
+				break;
+			case CAMERA_TYPE_XIMEA:
+				if ( fread( &ximea_frame, XIMEA_MOVIE_HEADER_LENGTH, 1, moviefile ) != 1 ) {
+						int offset = ftell( moviefile );
+						printf( "Corrupted header at offset %d\n", offset );
+						exit( EXIT_FAILURE );
+					}
+				size_x = ximea_frame.x_size_x;
+				size_y = ximea_frame.x_size_y;
+				break;
+			default:
+				printf( "Unsupported camera.\n" );
+				exit( EXIT_FAILURE );
+				break;
+
+		}
+		// Data depth
+		int bpp;
+		if (camera_frame.pixelmode == CAMERA_PIXELMODE_MONO_8)
+			bpp = 1;
+		else
+			bpp = 2;
+
+		char *h_current = h_image_buffer + size_x * size_y * frame_index;
+
+		// Read the data
+
+
+		if (fread(h_current, camera_frame.length_data, 1, moviefile ) != 1 ) {
+			int offset = ftell( moviefile );
+			fprintf(stderr, "Corrupted data at offset %d\n", offset);
+			exit(EXIT_FAILURE);
+		}
+
+		// Convert to little endian data if needed
+		if ( camera_frame.pixelmode == CAMERA_PIXELMODE_MONO_16BE ) {
+			char c;
+			for (int j = 0; j < size_x * size_y; j++ ) {
+				c = h_current[2*j];
+				h_current[2*j] = h_current[2*j+1];
+				h_current[2*j+1] = c;
+			}
+		}
+
+		//-
+
+		frame_index++;
 	}
 	return camera_frame;
 }
+*/
+
+
 
