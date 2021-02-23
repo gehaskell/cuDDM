@@ -38,7 +38,7 @@ __global__ void AbsDifference(cufftReal *d_diff, unsigned char *d_frame1, unsign
 	int y = threadIdx.y + blockIdx.y * blockSize_y;
 
 	if (x <= out_width-1 && y <= out_height-1) {
-		d_diff[y * out_width + x] = (float)abs(d_frame1[(y * img_width + x) * bytes_per_px] - d_frame2[(y * img_width + x)  * bytes_per_px]) ;
+		d_diff[y * out_width + x] = (cufftReal)abs(d_frame1[(y * img_width + x) * bytes_per_px] - d_frame2[(y * img_width + x)  * bytes_per_px]) ;
 	}
 	return;
 }
@@ -46,30 +46,34 @@ __global__ void AbsDifference(cufftReal *d_diff, unsigned char *d_frame1, unsign
 
 __global__ void processFFT(cufftComplex *d_data, float *d_fft, int tau_idx, int width, int height) {
 	// Takes output of cuFFT R2C operation, normalises it (i.e. divides by px count), takes the magnitude and adds it to the accum_array
-
-	int size = width * height;
+	//TODO look at cuff abs to make better
+	int size = (width * height);
+	float size_recip = 1.0 / (float)(size);
 
 	int j = threadIdx.x + blockIdx.x * blockSize_x;
 	int i = threadIdx.y + blockIdx.y * blockSize_y;
 
-	float mag;
+	float inten;
 	if (j <= width-1 && i <= height-1) {
 		int pos_offset = i * width + j;
 		int sym_w = width / 2 + 1; // to deal with complex (hermitian) symmetry
+		cufftComplex val;
 
 		if (j >= sym_w) {
 			// real ->  d_data[i*sym_w+(width-j)].x
 			// img  -> -d_data[i*sym_w+(width-j)].y
-			mag = cuCabsf(d_data[i*sym_w+(width-j)]) / (float)size;
+			val =  d_data[i*sym_w+(width-j)];
+			inten = (size_recip * val.x) * (size_recip * val.x) + (size_recip * val.y) * (size_recip * val.y);
 
 		} else {
 			// real -> d_data[i*sym_w+j].x
 			// img  -> d_data[i*sym_w+j].y
-			mag = cuCabsf(d_data[i*sym_w+j]) / (float)size;
+			val = d_data[i*sym_w+j];
+			inten = (size_recip * val.x) * (size_recip * val.x) + (size_recip * val.y) * (size_recip * val.y);
 		}
 
 		// add to fft_accum
-		d_fft[tau_idx * size + pos_offset] += mag*mag;
+		d_fft[tau_idx * size + pos_offset] += inten;
 	}
 }
 
@@ -166,7 +170,7 @@ void processChunk(cudaStream_t stream, unsigned char *d_ptr,
 	cufftSetStream(plan, stream);
 
 	// Main loop
-	int tau, idx1, idx2;
+	int tau, frame_idx;
 	unsigned char *d_frame1, *d_frame2;
 	cufftComplex *d_local_fft;
 	cufftReal *d_local_absdiff;
@@ -178,14 +182,12 @@ void processChunk(cudaStream_t stream, unsigned char *d_ptr,
 			d_local_fft = d_fft_workspace + (tau_idx * out_width * (out_height / 2 + 1));
 			d_local_absdiff = d_abs_workspace + (tau_idx * out_width * out_height);
 
-			idx1 = rand() % (frame_count - tau);
-			idx2 = idx1 + tau;
+			frame_idx = rand() % (frame_count - tau);
 
 			//std::cout << "tau: " << tau << " idxs: " << idx1 << ", " << idx2 << std::endl;
 
-			d_frame1 = d_ptr + (idx1 * img_width * img_height);	// float pointer to frame 1
-			d_frame2 = d_ptr + (idx2 * img_width * img_height);
-
+			d_frame1 = d_ptr + (frame_idx * img_width * img_height);	// float pointer to frame 1
+			d_frame2 = d_ptr + ((frame_idx+tau) * img_width * img_height);
 
 			AbsDifference<<<gridDim, blockDim, 0, stream >>>(d_local_absdiff, d_frame1, d_frame2, img_width, img_height, out_width, out_height); // find absolute difference
 
@@ -207,14 +209,14 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
     int w = width; int h = height;
 
 	// Generate q - vectors - Hard Coded
-	int q_count = 20;
+	int q_count = 25;
 
 	float q_squared[q_count];
 	float q_vector[q_count];
 
 	for (int i = 0; i < q_count; i++) {
 		//std::cout << 50 * ((float)i /20.0) << std::endl;
-		q_vector[i] =  40.0 * ((float)(i+1) /q_count);
+		q_vector[i] = 75 * ((float)(i+1) /q_count);
 		q_squared[i] = q_vector[i] * q_vector[i];
 	}
 
@@ -245,7 +247,7 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
                 r_sqr = shift_x * shift_x + shift_y * shift_y;
                 ratio = r_sqr / q_squared[q_idx];
 
-                if (1 <= ratio && ratio <= 1.44) { // we want values from 1.0 * q to 1.2 * q
+                if (1 <= ratio && ratio <= 1.69) { // we want values from 1.0 * q to 1.2 * q
                     masks[q_idx*w*h + y*w + x] = 1.0;
                     px_count[q_idx] += 1;
                 } else {
@@ -264,19 +266,17 @@ void HARDCODEanalyseFFTHost(float *d_in, int norm_factor, int *tau_vector, int t
 
         for (int q_idx = 0; q_idx < q_count; q_idx++) {
         	val = 0;
-        	int px = 0;
 
         	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
 
         		for (int i = 0; i < w*h; i++) { 	// iterate through all pixels
                 	val += d_in[w * h * tau_idx + i] * masks[w * h * q_idx + i] ;
-                	if (masks[w * h * q_idx + i]) {px += 1;}
                 }
                 // Also should divide by chunk count
                 val /= (float)px_count[q_idx]; // could be potential for overflow here
                 val /= (float)norm_factor;
         	} else {
-        		printf("q %d has zero mask pixels", q_idx);
+        		printf("q %d has zero mask pixels\n", q_idx);
         	}
 
         	iq_tau[q_idx * tau_count + tau_idx] = val;
@@ -330,13 +330,11 @@ int main(){
 	int out_width = 1024;
 	int out_height = 1024;
 
-	int buffer_frames = 20;
-	int total_frames = 1000;
+	int buffer_frames = 25;
+	int total_frames = 2000;
 	int tau_count = 15;
 	int tau_vector [tau_count] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 	int repeat_count = 50;
-
-	//float *debug_buffer = new float [out_width * out_height * tau_count]; // DEBUG
 
 	// Initialisation
 	int iterations = total_frames / buffer_frames;
@@ -447,17 +445,6 @@ int main(){
 	cudaFree(d_abs_workspace1); cudaFree(d_abs_workspace2);
 	cudaFree(d_fft_workspace1); cudaFree(d_fft_workspace2);
 	cufftDestroy(plan);
-
-
-//	std::ofstream myfile("/home/ghaskell/projects_Git/cuDDM/data/data2.txt");
-//	if (myfile.is_open()) {
-//		for (int x = 0; x < out_width * out_height * tau_count; x++) {
-//			myfile << h_out[x] <<" ";
-//		}
-//		myfile << std::endl;
-//	}
-//	myfile.close();
-
 
 	auto t2 = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration_cast<std::chrono::microseconds>( t2 - start_time ).count();
