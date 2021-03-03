@@ -41,9 +41,9 @@ __global__ void parseBuffer(unsigned char *d_buffer, float *d_parsed, frame_info
 	int y = threadIdx.y + blockIdx.y * blockSize_y;
 
 
-	if (info.out_width + info.x_offset > info.in_width || info.out_height + info.y_offset > info.in_height) {
-		printf("[Image Parse Error] x / y offset too large.");
-	}
+//	if (info.out_width + info.x_offset > info.in_width || info.out_height + info.y_offset > info.in_height) {
+//		printf("[Image Parse Error] x / y offset too large./n");
+//	}
 
 	if (x < info.out_width && y < info.out_height) {
 		for (int frame_idx = 0; frame_idx < frame_count; frame_idx++) {
@@ -163,6 +163,10 @@ void chunk_analysis(unsigned char *d_buff,
 	int out_width = frame_info.out_width;
 	int out_height = frame_info.out_height;
 
+	if (frame_info.out_width + frame_info.x_offset > frame_info.in_width || frame_info.out_height + frame_info.y_offset > frame_info.in_height) {
+		fprintf(stderr, "[Image Parse Error] x / y offset too large. (Image width / height: %d / %d)\n", frame_info.in_width , frame_info.in_height );
+	}
+
 	dim3 blockDim(blockSize_x, blockSize_y, 1);
 
 	int tmp_x, tmp_y;
@@ -182,7 +186,7 @@ void chunk_analysis(unsigned char *d_buff,
 
 	//FFT execute
 	if ((cufftExecR2C(fft_plan, d_parsed_buff, d_fft_frames)) != CUFFT_SUCCESS) {
-		std::cout << "cuFFT Exec Error\n" << std::endl;
+		fprintf(stderr, "[cuFFT Exec Error]");
 	}
 
 	// Main loop
@@ -318,20 +322,25 @@ int main() {
 	//  PARAMETERS  //
 	//////////////////
 
-	bool movie_file = false;
-
-	VideoCapture cap("/media/ghaskell/Slow Drive/colloid_vids/red_colloids_0_5um11Feb2021152731.mp4");
+	bool movie_file = true;
 
 	FILE *moviefile;
-	if ( !(moviefile = fopen("/media/ghaskell/Slow Drive/colloid_vids/blue_colloids_1um11feb160000.movie", "rb" ))) {
+	if ( !(moviefile = fopen("/media/ghaskell/Slow Drive/colloid_vids/red_colloids_0_5um.11Feb2021_15.27.31.movie", "rb" ))) {
 		fprintf(stderr, "Couldn't open movie file.\n" );
 		exit( EXIT_FAILURE );
 	}
+
+	VideoCapture cap("/media/ghaskell/Slow Drive/colloid_vids/red_colloids_0_5um11Feb2021152731.mp4");
+	//VideoCapture cap(0);
+
+
 	video_info_struct vid_info = initFile(moviefile);
 
 	int img_width, img_height, bytes_per_px;
 
 	if (movie_file) {
+
+
 		img_width = vid_info.size_x;
 		img_height = vid_info.size_y;
 		bytes_per_px = vid_info.bpp;
@@ -347,14 +356,14 @@ int main() {
 	int x_offset = 0;
 	int y_offset = 0;
 
-	int buffer_frame_count = 50;
-	int total_frames = 1500;
+	int buffer_frame_count = 100;
+	int total_frames = 1400;
 	int repeats = 20;
 
-	int tau_count = 15;
+	int tau_count = 10;
 	int tau_vector [tau_count];
 	for (int j = 0; j < tau_count; j++) {
-		tau_vector[j] = (j+2);
+		tau_vector[j] = (j+2)*8;
 	}
 
 	int q_count = 25;
