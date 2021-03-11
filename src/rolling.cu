@@ -160,6 +160,82 @@ void analyseChunk(cufftComplex *d_start,
 }
 
 
+void setUpAnalysis(int q_count, float *q_vector, float tolerance, int width, int height) {
+	float q_squared[q_count];
+	for (int i = 0; i < q_count; i++) {
+		q_squared[i] = q_vector[i] * q_vector[i];
+	}
+
+	// Generate masks
+
+	int *px_count = new int[q_count](); // () initialises to zero
+    bool *masks = new bool[(width / 2 + 1) * height * q_count];
+
+    float t_sqr = tolerance * tolerance;
+    int half_h = height / 2;
+    int half_w = width / 2;
+
+    float r_sqr, ratio;
+
+    // First Generate the radius masks
+    int shift_x, shift_y;
+
+    bool tmp;
+    for (int q_idx = 0; q_idx < q_count; q_idx++) {
+        for (int x = 0; x < (width / 2 + 1); x++) {
+            for (int y = 0; y < height; y++) {
+                // Perform manual FFT shift
+                shift_x = (x + half_w) % width;
+                shift_y = (y + half_h) % height;
+
+                // Distance relative to centre
+                shift_x -= half_w;
+                shift_y -= half_h;
+
+                r_sqr = shift_x * shift_x + shift_y * shift_y;
+                ratio = r_sqr / q_squared[q_idx];
+
+                tmp = (1 <= ratio && ratio <= t_sqr);  // we want values from 1.0 * q to tolerance * q
+                if (tmp) px_count[q_idx] += 1;
+                masks[q_idx * (width/2+1) * height + y * (width/2+1) + x] = tmp;
+            }
+        }
+    }
+    // TODO masks now init
+}
+
+
+void doAnalysis(float *h_data, bool *masks, int px_count, int norm_factor, int tau_count, int q_count, int width, int height) {
+    float val;
+	float * iq_tau = new float[tau_count * q_count]();
+
+    for (int tau_idx = 0; tau_idx < tau_count; tau_idx++) {
+        for (int q_idx = 0; q_idx < q_count; q_idx++) {
+        	val = 0.0;
+
+        	if (px_count[q_idx] != 0) { // If the mask has no values iq_tau must be zero
+
+        		for (int x_i = 0; x_i < (width/2+1); x_i++) {
+        			for (int y_i = 0; y_i < height; y_i++) {
+        				if (masks[(width/2+1) * height * q_idx + (width/2+1)*y_i + x_i])
+        					val += h_data[(width/2+1) * height * tau_idx + (width/2+1)*y_i + x_i];
+        			}
+        		}
+                // Also should divide by chunk count
+        		val *= 2; // account for symmetry
+                val /= static_cast<float>(px_count[q_idx]);
+                val /= static_cast<float>(norm_factor);
+        	} else {
+        		printf("q %d has zero mask pixels\n", q_idx);
+        	}
+        	iq_tau[q_idx * tau_count + tau_idx] = val;
+        }
+    }
+
+}
+
+
+
 void analyseFFTHost(float *d_in, int norm_factor, float *q_vector, int q_count, int *tau_vector, int tau_count, int width, int height) {
     int w = width; int h = height;
 
