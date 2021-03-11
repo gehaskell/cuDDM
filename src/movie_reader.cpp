@@ -1,8 +1,11 @@
-#include "movie_reader.h"
+#include "movie_reader.hpp"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <iostream>
+#include <nvToolsExt.h>
+#include <opencv2/opencv.hpp>
+#include <string>
 
 // Common camera defines
 #define CAMERA_MOVIE_MAGIC 0x496d6554 // TemI
@@ -39,11 +42,11 @@ video_info_struct initFile(FILE *moviefile) {
 
 	fseek(moviefile, magic_offset, SEEK_SET);
 
-	if (found) {
-		printf("Found magic. \n");
-	} else {
-		printf("Not Found magic. \n");
-	}
+//	if (found) {
+//		printf("Found magic. \n");
+//	} else {
+//		printf("Not Found magic. \n");
+//	}
 
 	// Extract general frame information
 	camera_save_struct camera_frame;
@@ -127,11 +130,13 @@ video_info_struct initFile(FILE *moviefile) {
 	out.length_data = camera_frame.length_data;
 	out.bpp = bpp;
 
-	printf("[Initialised frame] x-size: %d, y-size %d, pixel-mode %d\n", out.size_x, out.size_y, camera_frame.pixelmode);
+	//printf("[Initialised frame] frame x-size: %d, frame y-size %d, pixel-mode %d\n", out.size_x, out.size_y, camera_frame.pixelmode);
 	return out;
 }
 
-void loadFileToHost (FILE* moviefile, unsigned char *h_buffer, video_info_struct vid_info, int frame_count) {
+void loadMovieToHost (FILE* moviefile, unsigned char *h_buffer, video_info_struct vid_info, int frame_count) {
+	nvtxRangePush(__FUNCTION__); // to track video loading times in nvvp
+
 	// Read header
 	// Read data
 
@@ -189,9 +194,62 @@ void loadFileToHost (FILE* moviefile, unsigned char *h_buffer, video_info_struct
 		//printf("Read Frame (%d * %d * %d = %d)\n", (int)vid_info.size_x, (int)vid_info.size_y, bpp, vid_info.length_data);
 		frame_index++;
 	}
-
+    nvtxRangePop();
 }
 
 
+void loadCaptureToHost(cv::VideoCapture cap, unsigned char *h_buffer, frame_info info, int frame_count) {
+	// TODO as we have true frame size we could run analysis on just the bit we will be using
+	nvtxRangePush(__FUNCTION__); // to track video loading times in nvvp
+
+	//printf("load video (%d frames) (w: %d, h: %d)\n", frame_count, w, h);
+
+	int num_elements = info.in_width * info.in_height;
+
+	cv::Mat input_img; //, grayscale_img;
+
+	// There is some problems with the image type we are using - though some effort was put into switching to a
+	// more generic image format, more thought is required therefore switch to just dealing with 3 channel uchars
+	// look at http://ninghang.blogspot.com/2012/11/list-of-mat-type-in-opencv.html and
+	// https://docs.opencv.org/3.4/d3/d63/classcv_1_1Mat.html#aa5d20fc86d41d59e4d71ae93daee9726 for more info.
+
+
+	for (int frame_idx = 0; frame_idx < frame_count; frame_idx++) {
+		//std::cout << "Loaded frame " << frame_idx << std::endl;
+
+		cap >> input_img;
+
+		if (input_img.empty()) {
+			fprintf(stderr,"Video frame is empty");
+		}
+
+		//input_img.convertTo(grayscale_img, CV_32FC1); // covert to grayscale image
+
+		if (input_img.type() != 16) {
+			fprintf(stderr,"Non standard image format detected, may cause unexpected behaviour, image type : %d", input_img.type());
+		}
+
+	    // imshow("Input", input_img);
+	    // waitKey(0);
+
+		int cols = input_img.cols, rows = input_img.rows;
+
+		int in_width = info.in_width;
+		int in_height = info.in_height;
+
+		int out_width = info.out_width;
+		int out_height= info.out_height;
+
+		// we take short cut by only analysing the pixels we will actually need - this means that the buffer will be padded with junk values
+		for (int y = 0; y < out_height; y++) {
+			for (int x = 0; x < out_width; x++) {
+				// Using img.at<>8
+				h_buffer[frame_idx * num_elements + y * in_width + x] =  (unsigned char) input_img.data[((input_img.step)/input_img.elemSize1())* y + input_img.channels() * x];
+			}
+		}
+	}
+
+    nvtxRangePop();
+}
 
 

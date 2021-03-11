@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <opencv2/opencv.hpp>
 
 #ifndef MOVIE_READER_H
 #define MOVIE_READER_H
@@ -224,7 +225,17 @@ struct video_info_struct {
 	int bpp;
 };
 
-void loadFileToHost (FILE* moviefile, unsigned char *h_buffer, video_info_struct vid_info, int frame_count);
+struct frame_info {
+	int out_width;
+	int out_height;
+	int in_width;
+	int in_height;
+	int x_offset = 0;
+	int y_offset = 0;
+};
+
+void loadMovieToHost  (FILE* moviefile, unsigned char *h_buffer, video_info_struct vid_info, int frame_count);
+void loadCaptureToHost(cv::VideoCapture cap, unsigned char *h_buffer, frame_info info, int frame_count);
 video_info_struct initFile(FILE *moviefile);
 
 

@@ -356,8 +356,7 @@ int main() {
 	int x_offset = 0;
 	int y_offset = 0;
 
-	int buffer_frame_count = 300;
-	int chunk_frame_count = 100;
+	int buffer_frame_count = 100;
 	int total_frames = 1400;
 	int repeats = 20;
 
@@ -377,22 +376,27 @@ int main() {
 	//  MEMORY ALLOCATIONS  //
 	//////////////////////////
 
+	// host & device frame buffer for both streams
+
+	unsigned char *h_buffer1, *h_buffer2;
+	unsigned char *d_buffer1, *d_buffer2;
+
 	size_t buffer_size = sizeof(unsigned char) * buffer_frame_count * img_width * img_height * bytes_per_px; // #frames * size of raw frame
-	size_t chunk_size = sizeof(unsigned char) * chunk_frame_count * img_width * img_height * bytes_per_px; // #frames * size of raw frame
 
-	unsigned char d_buffer;
+	gpuErrchk(cudaHostAlloc((void **) &h_buffer1, buffer_size, cudaHostAllocDefault)); // As we do async memory copies - must be pinned memory
+	gpuErrchk(cudaHostAlloc((void **) &h_buffer2, buffer_size, cudaHostAllocDefault));
 
-	gpuErrchk(cudaMalloc((void **) &d_buffer, buffer_size));
+	gpuErrchk(cudaMalloc((void **) &d_buffer1, buffer_size));
+	gpuErrchk(cudaMalloc((void **) &d_buffer2, buffer_size));
 
-	unsigned char *h_buffer;
-	gpuErrchk(cudaHostAlloc((void **) &h_buffer, buffer_size, cudaHostAllocDefault)); // As we do async memory copies - must be pinned memory
+	// parsed frame buffer
 
-	float *d_parsed;
+	float *d_parsed1, *d_parsed2;
+
 	size_t parsed_size = sizeof(float) * buffer_frame_count * out_width * out_height; // #frames * size of raw frame
-	gpuErrchk(cudaMalloc((void **) &d_parsed, parsed_size));
 
-
-
+	gpuErrchk(cudaMalloc((void **) &d_parsed1, parsed_size));
+	gpuErrchk(cudaMalloc((void **) &d_parsed2, parsed_size));
 
 	// FFT workspace
 
@@ -421,6 +425,24 @@ int main() {
 
 	h_out = new float[accum_size];
 
+	////////////////////////
+	//  SHUFFLE POINTERs  //
+	////////////////////////
+
+	unsigned char *d_buff_current = d_buffer1;
+	unsigned char *d_buff_next = d_buffer2;
+
+	unsigned char *h_buff_current = h_buffer1;
+	unsigned char *h_buff_next = h_buffer2;
+
+	float *d_parsed_current = d_parsed1;
+	float *d_parsed_next = d_parsed2;
+
+	cufftComplex *d_fft_current = d_fft1;
+	cufftComplex *d_fft_next = d_fft2;
+
+	float *d_accum_current = d_int_accum1;
+	float *d_accum_next = d_int_accum2;
 
 	////////////////
 	//  FFT PLAN  //
@@ -429,7 +451,7 @@ int main() {
 	// plan to perform buffer_frame_number C2R,
 	cufftHandle plan;
 
-	int batch_count = chunk_frame_count;
+	int batch_count = buffer_frame_count;
 	int rank = 2;
     int n[2] = {out_width, out_height};
 
@@ -459,8 +481,8 @@ int main() {
 
 	// iteration counts
 
-	int total_chunks = total_frames / chunk_frame_count;
-	int chunks_remaining = total_chunks;
+	int total_iterations = total_frames / buffer_frame_count;
+	int iterations_remaining = total_iterations;
 
 	// streams
 
@@ -476,60 +498,10 @@ int main() {
 	//  MAIN LOOP  //
 	/////////////////
 
-	// TODO these need to be assigned
-	unsigned char *h_chunkA, *h_chunkB, *h_chunkC;
-	unsigned char *d_chunkA, *d_chunkB, *d_chunkC;
-	float *d_parsedA, *d_parsedB, *d_parsedC;
-
-	unsigned char *h_ready, *h_idle, *h_used;
-	unsigned char *d_ready, *d_idle, *d_used;
-	float *d_start, *d_end, *d_junk;
-
-	unsigned char *uc_tmp;
-	float *f_tmp;
-
-	while (chunks_remaining > 1) {
-
-		gpuErrchk(cudaMemcpyAsync(d_ready, h_ready, buffer_size, cudaMemcpyHostToDevice, *stream_current));
-
-		parseChunk(d_ready, d_end, stream_current); // TODO implement
-
-		int frame_offset = 0;
-
-		for (int frame_offset = 0; frame_offset < chunk_frame_count; frame_offset++) {
-			performAnalysis(d_start, d_end, frame_offset ,stream_current); // TODO implement
-		}
-
-		// prevent overrun
-		gpuErrchk(cudaStreamSynchronize(*stream_next));
-
-		loadFrames(h_used, chunk_frame_count);
-
-
-		//// PTR swap
-
-		// host
-		uc_tmp = h_used;
-		h_used = h_ready;
-		h_ready = h_idle;
-		h_idle = uc_tmp;
-
-		uc_tmp = d_used;
-		d_used = d_ready;
-		d_ready = d_idle;
-		d_idle = uc_tmp;
-
-		f_tmp = d_junk;
-		d_junk = d_start;
-		d_start = d_end;
-		d_end = f_tmp;
-
-
-	}
-
-
-
-
+	if (movie_file)
+		loadFileToHost(moviefile, h_buff_current, vid_info, buffer_frame_count);
+	else
+		LoadVideoToBuffer(h_buff_current, buffer_frame_count, cap, img_width, img_height); // puts chunk data into pinned host memory
 
 	while (iterations_remaining > 1) {
 
@@ -618,4 +590,3 @@ int main() {
 	analyseFFTHost(h_out, repeats*total_iterations, q_vector, q_count, tau_vector, tau_count, out_width, out_height);
 
 }
-
